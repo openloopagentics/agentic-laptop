@@ -1,0 +1,62 @@
+From 578d2941d76e560f090123a1f19b3be9af922cf0 Mon Sep 17 00:00:00 2001
+From: Ravi <ravi@openloopagentics.com>
+Date: Wed, 9 Sep 2026 23:57:14 -0700
+Subject: [PATCH 07/18] Save and restore cairo state around widget and badge
+ drawing
+
+Font size, line width and line cap are set once per frame before the button
+loop. Widgets and badges set their own and never restored them, so every
+button drawn after one rendered its label at the widget's font size -- visible
+as a whole row of shrunken text until a tap forced a partial redraw.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0196XW9vTfjGeWDpHTAmYsws
+---
+ src/main.rs   | 2 ++
+ src/widget.rs | 5 +++++
+ 2 files changed, 7 insertions(+)
+
+diff --git a/src/main.rs b/src/main.rs
+index 4017a84..455b650 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -833,6 +833,7 @@ impl FunctionLayer {
+             // text. `bot` is the button's top edge (cairo y grows downward).
+             if let Some(badge) = &button.badge {
+                 if badge.count > 0 {
++                    c.save().unwrap(); // same reason: don't leak font size
+                     let (r, g, b) = match badge.state.as_str() {
+                         "ask" => (0.953, 0.545, 0.659),  // #f38ba8 - wants you
+                         "done" => (0.651, 0.890, 0.631), // #a6e3a1 - finished
+@@ -867,6 +868,7 @@ impl FunctionLayer {
+                         cy + ext.height() / 2.0,
+                     );
+                     c.show_text(&label).unwrap();
++                    c.restore().unwrap();
+                 }
+             }
+ 
+diff --git a/src/widget.rs b/src/widget.rs
+index f8ff470..4d2758d 100644
+--- a/src/widget.rs
++++ b/src/widget.rs
+@@ -215,11 +215,16 @@ impl Widget {
+         top: f64,
+         color: Rgb,
+     ) {
++        // Font size, line width and cap are set once per frame outside the
++        // button loop; a widget must not leak its own values onto the buttons
++        // drawn after it.
++        c.save().unwrap();
+         match self.kind {
+             WidgetKind::Sparkline => self.render_sparkline(c, left_edge, width, bot, top, color),
+             WidgetKind::Rings => self.render_rings(c, left_edge, width, bot, top),
+             WidgetKind::Bars => self.render_bars(c, left_edge, width, bot, top, color),
+         }
++        c.restore().unwrap();
+     }
+ 
+     fn render_sparkline(
+-- 
+2.55.0
+

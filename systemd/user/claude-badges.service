@@ -1,0 +1,13 @@
+[Unit]
+Description=Bridge Claude attention events onto the Touch Bar
+After=graphical-session.target
+
+[Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Nodes come from ~/.config/claude-badged/fleet, written by agentic-fleet.
+ExecStart=%h/.local/bin/claude-badged
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

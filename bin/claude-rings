@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""Render Claude usage limits as concentric rings, one set per account.
+
+Usage: claude-rings [ssh-host ...] [-o out.html]
+Runs climits to collect, then writes a standalone page.
+"""
+import json
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+OUT_DEFAULT = Path.home() / "claude-rings.html"
+
+# Ring order is outermost first. Colours are the validated categorical slots
+# 1/2/3 (blue, orange, aqua) - fixed per limit kind, so the same limit is the
+# same colour in every account's rings.
+RINGS = [
+    ("session",       "5-hourly",    "#2a78d6", "#3987e5"),
+    ("weekly_all",    "Weekly, all", "#eb6834", "#d95926"),
+    ("weekly_scoped", "Weekly",      "#1baf7a", "#199e70"),
+]
+
+
+def collect(hosts):
+    out = subprocess.run([str(Path.home() / ".local/bin/climits"), *hosts],
+                         capture_output=True, text=True, check=True).stdout
+    return json.loads(out)
+
+
+def main():
+    args = sys.argv[1:]
+    out = OUT_DEFAULT
+    if "-o" in args:
+        i = args.index("-o")
+        out = Path(args[i + 1])
+        args = args[:i] + args[i + 2:]
+
+    accounts = collect(args)
+    if not accounts:
+        sys.exit("claude-rings: no accounts with cached usage found")
+
+    payload = {
+        "generated": datetime.now(timezone.utc).isoformat(),
+        "rings": [{"kind": k, "label": l, "light": lt, "dark": dk}
+                  for k, l, lt, dk in RINGS],
+        "accounts": accounts,
+    }
+    html = TEMPLATE.replace("__DATA__", json.dumps(payload))
+    out.write_text(html)
+    print(out)
+
+
+TEMPLATE = r"""<title>Claude Usage Rings</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+  :root {
+    --surface:  #fcfcfb;
+    --card:     #ffffff;
+    --line:     #e6e5e0;
+    --track:    #ecebe6;
+    --ink:      #1f1e1b;
+    --ink-2:    #55534c;
+    --ink-3:    #8b8880;
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+    --warn:  #b8570f;
+    --crit:  #c0362c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --surface: #131312; --card: #1a1a19; --line: #2f2e2b; --track: #2a2926;
+      --ink: #ffffff; --ink-2: #c3c2b7; --ink-3: #8c8a81;
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+      --warn: #e0913f; --crit: #e8695c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --surface: #131312; --card: #1a1a19; --line: #2f2e2b; --track: #2a2926;
+    --ink: #ffffff; --ink-2: #c3c2b7; --ink-3: #8c8a81;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+    --warn: #e0913f; --crit: #e8695c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2.5rem 1.25rem 4rem;
+    background: var(--surface); color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    line-height: 1.55;
+  }
+  .wrap { max-width: 60rem; margin: 0 auto; display: flex; flex-direction: column; gap: 2rem; }
+  header { display: flex; flex-direction: column; gap: 0.35rem; }
+  h1 { margin: 0; font-size: 1.9rem; font-weight: 700; letter-spacing: -0.02em; }
+  .sub { color: var(--ink-3); font-size: 0.85rem; font-family: "IBM Plex Mono", monospace; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); gap: 1.25rem; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 1.5rem; display: flex; flex-direction: column; gap: 1.15rem; min-width: 0;
+  }
+  .who { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+  .who .email { font-weight: 600; font-size: 1rem; word-break: break-all; }
+  .who .meta {
+    font-family: "IBM Plex Mono", monospace; font-size: 0.75rem; color: var(--ink-3);
+    display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;
+  }
+  .stale { color: var(--warn); font-weight: 500; }
+
+  .rings { display: flex; align-items: center; gap: 1.35rem; flex-wrap: wrap; }
+  svg.dial { flex: 0 0 auto; }
+  svg.dial circle { transition: opacity .15s ease; }
+
+  .readout { display: flex; flex-direction: column; gap: 0.6rem; min-width: 0; flex: 1 1 9rem; }
+  .row { display: grid; grid-template-columns: 0.6rem 1fr auto; gap: 0.55rem; align-items: baseline; }
+  .row .dot { width: 0.6rem; height: 0.6rem; border-radius: 50%; align-self: center; }
+  .row .name { font-size: 0.82rem; color: var(--ink-2); min-width: 0; }
+  .row .name small { display: block; color: var(--ink-3); font-size: 0.72rem;
+                     font-family: "IBM Plex Mono", monospace; }
+  .row .val {
+    font-family: "IBM Plex Mono", monospace; font-size: 1rem; font-weight: 600;
+    font-variant-numeric: tabular-nums; color: var(--ink);
+  }
+  .row.hot .val { color: var(--crit); }
+  .row.warm .val { color: var(--warn); }
+
+  table { border-collapse: collapse; width: 100%; font-size: 0.78rem; }
+  th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--line); }
+  th { font-family: "IBM Plex Mono", monospace; font-weight: 500; color: var(--ink-3);
+       text-transform: uppercase; letter-spacing: 0.07em; font-size: 0.66rem; }
+  td.n { text-align: right; font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
+  details { border: 1px solid var(--line); border-radius: 10px; padding: 0.75rem 1rem; background: var(--card); }
+  summary { cursor: pointer; font-size: 0.85rem; color: var(--ink-2); }
+  .scroll { overflow-x: auto; margin-top: 0.6rem; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Claude Usage Rings</h1>
+    <div class="sub" id="stamp"></div>
+  </header>
+  <div class="cards" id="cards"></div>
+  <details>
+    <summary>Same figures as a table</summary>
+    <div class="scroll"><table id="table"></table></div>
+  </details>
+</div>
+
+<script>
+const DATA = __DATA__;
+
+const fmtPct = v => (v === null || v === undefined) ? "--" : v + "%";
+
+function relative(ms) {
+  if (!ms) return "unknown";
+  const mins = Math.round((Date.now() - ms) / 60000);
+  if (mins < 2) return "just now";
+  if (mins < 90) return mins + " min ago";
+  const hrs = Math.round(mins / 60);
+  if (hrs < 48) return hrs + " h ago";
+  return Math.round(hrs / 24) + " d ago";
+}
+
+function resetsIn(iso) {
+  if (!iso) return "no reset";
+  const ms = new Date(iso) - Date.now();
+  if (ms <= 0) return "resetting";
+  const mins = Math.round(ms / 60000);
+  if (mins < 90) return "resets in " + mins + "m";
+  const hrs = Math.round(mins / 60);
+  if (hrs < 48) return "resets in " + hrs + "h";
+  return "resets in " + Math.round(hrs / 24) + "d";
+}
+
+// Outermost ring first; each sits inside the previous with a surface gap.
+function dial(account) {
+  const size = 148, cx = size / 2, cy = size / 2;
+  const stroke = 15, gap = 5;
+  const svgns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgns, "svg");
+  svg.setAttribute("class", "dial");
+  svg.setAttribute("width", size);
+  svg.setAttribute("height", size);
+  svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
+  svg.setAttribute("role", "img");
+
+  const parts = [];
+  DATA.rings.forEach((ring, i) => {
+    const r = (size / 2) - stroke / 2 - i * (stroke + gap);
+    const circ = 2 * Math.PI * r;
+    const data = account.rings[ring.kind];
+    const pct = data ? Math.max(0, Math.min(100, data.percent ?? 0)) : 0;
+
+    const track = document.createElementNS(svgns, "circle");
+    track.setAttribute("cx", cx); track.setAttribute("cy", cy); track.setAttribute("r", r);
+    track.setAttribute("fill", "none");
+    track.setAttribute("stroke", "var(--track)");
+    track.setAttribute("stroke-width", stroke);
+    svg.appendChild(track);
+
+    const arc = document.createElementNS(svgns, "circle");
+    arc.setAttribute("cx", cx); arc.setAttribute("cy", cy); arc.setAttribute("r", r);
+    arc.setAttribute("fill", "none");
+    arc.setAttribute("stroke", `var(--s${i + 1})`);
+    arc.setAttribute("stroke-width", stroke);
+    arc.setAttribute("stroke-linecap", "round");
+    arc.setAttribute("stroke-dasharray", `${circ * pct / 100} ${circ}`);
+    arc.setAttribute("transform", `rotate(-90 ${cx} ${cy})`);
+    arc.dataset.idx = i;
+    svg.appendChild(arc);
+
+    parts.push(`${ring.label}${data && data.model ? " " + data.model : ""} ${pct}%`);
+  });
+  svg.setAttribute("aria-label", account.email + ": " + parts.join(", "));
+  return svg;
+}
+
+function card(account) {
+  const el = document.createElement("div");
+  el.className = "card";
+
+  const stale = account.fetchedAtMs && (Date.now() - account.fetchedAtMs) > 6 * 3600 * 1000;
+  const who = document.createElement("div");
+  who.className = "who";
+  who.innerHTML = `<div class="email">${account.email ?? "unknown account"}</div>
+    <div class="meta"><span>${account.host}</span><span>·</span>
+    <span class="${stale ? "stale" : ""}">as of ${relative(account.fetchedAtMs)}</span></div>`;
+  el.appendChild(who);
+
+  const rings = document.createElement("div");
+  rings.className = "rings";
+  const svg = dial(account);
+  rings.appendChild(svg);
+
+  const readout = document.createElement("div");
+  readout.className = "readout";
+  DATA.rings.forEach((ring, i) => {
+    const d = account.rings[ring.kind];
+    const pct = d ? d.percent : null;
+    const row = document.createElement("div");
+    row.className = "row" + (pct >= 90 ? " hot" : pct >= 70 ? " warm" : "");
+    const label = ring.label + (d && d.model ? " · " + d.model : "");
+    row.innerHTML = `<span class="dot" style="background:var(--s${i + 1})"></span>
+      <span class="name">${label}<small>${d ? resetsIn(d.resets_at) : "no data"}</small></span>
+      <span class="val">${fmtPct(pct)}</span>`;
+    row.addEventListener("mouseenter", () => {
+      svg.querySelectorAll("circle[data-idx]").forEach(c => {
+        c.style.opacity = c.dataset.idx == i ? "1" : "0.25";
+      });
+    });
+    row.addEventListener("mouseleave", () => {
+      svg.querySelectorAll("circle[data-idx]").forEach(c => { c.style.opacity = "1"; });
+    });
+    readout.appendChild(row);
+  });
+  rings.appendChild(readout);
+  el.appendChild(rings);
+  return el;
+}
+
+const cards = document.getElementById("cards");
+DATA.accounts.forEach(a => cards.appendChild(card(a)));
+
+document.getElementById("stamp").textContent =
+  "generated " + new Date(DATA.generated).toLocaleString() +
+  " · figures are as fresh as each account's last Claude Code run";
+
+const t = document.getElementById("table");
+let head = "<tr><th>Account</th><th>Host</th>" +
+  DATA.rings.map(r => `<th>${r.label}</th>`).join("") + "<th>As of</th></tr>";
+let body = DATA.accounts.map(a =>
+  `<tr><td>${a.email ?? "?"}</td><td>${a.host}</td>` +
+  DATA.rings.map(r => `<td class="n">${fmtPct(a.rings[r.kind]?.percent)}</td>`).join("") +
+  `<td class="n">${relative(a.fetchedAtMs)}</td></tr>`).join("");
+t.innerHTML = head + body;
+</script>
+"""
+
+if __name__ == "__main__":
+    main()

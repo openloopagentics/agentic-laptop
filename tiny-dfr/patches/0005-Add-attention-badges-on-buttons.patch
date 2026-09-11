@@ -1,0 +1,328 @@
+From effdf846f19b09738d3b5471ecb1c629d98274fe Mon Sep 17 00:00:00 2001
+From: Ravi <ravi@openloopagentics.com>
+Date: Wed, 9 Sep 2026 23:50:22 -0700
+Subject: [PATCH 05/18] Add attention badges on buttons
+
+A button can now carry a Badge key naming an entry in a world-readable TOML
+file, and draws a coloured marker on its bottom edge while that entry is set:
+
+  BadgeFile = "/var/lib/claude-limits/badges.toml"
+  { Text = "alpha", Action = [...], Badge = "alpha" }
+
+The file is re-read on the existing 1s tick, and only buttons whose state
+actually changed are marked dirty, so partial redraw still applies. "ask" and
+"done" get distinct colours; anything else falls back to a neutral marker.
+
+As with the widget file source, the daemon runs as `nobody` and cannot read a
+user's home, so state arrives through a file written by something outside it.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0196XW9vTfjGeWDpHTAmYsws
+---
+ src/config.rs |  8 +++++++
+ src/main.rs   | 58 +++++++++++++++++++++++++++++++++++++++++++++++++++
+ src/widget.rs | 29 ++++++++++++++++++++------
+ 3 files changed, 89 insertions(+), 6 deletions(-)
+
+diff --git a/src/config.rs b/src/config.rs
+index 6d5f881..1b76073 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -67,6 +67,9 @@ fn resolve_color(value: &Option<String>, palette: &HashMap<String, Rgb>) -> Opti
+ }
+ 
+ pub struct Config {
++    /// World-readable TOML of `key = "state"`, written by something outside
++    /// the daemon; `nobody` cannot read a user's home directory.
++    pub badge_file: Option<String>,
+     pub show_button_outlines: bool,
+     pub enable_pixel_shift: bool,
+     pub font_face: FontFace,
+@@ -87,6 +90,7 @@ struct ConfigProxy {
+     double_press_switch_layers: Option<u32>,
+     palette: Option<HashMap<String, String>>,
+     extra_layers: Option<HashMap<String, Vec<ButtonConfig>>>,
++    badge_file: Option<String>,
+     primary_layer_keys: Option<Vec<ButtonConfig>>,
+     media_layer_keys: Option<Vec<ButtonConfig>>,
+ }
+@@ -145,6 +149,8 @@ pub struct ButtonConfig {
+     /// Name of a layer in [ExtraLayers], or "primary"/"media". Pressing the
+     /// button switches to it instead of sending keys.
+     pub layer: Option<String>,
++    /// Key into the badge file; a marker is drawn while that key is set.
++    pub badge: Option<String>,
+     /// Resolved from `layer` once layer indices are known; never deserialised.
+     #[serde(skip)]
+     pub switch_to: Option<usize>,
+@@ -187,6 +193,7 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
+         base.double_press_switch_layers = user.double_press_switch_layers.or(base.double_press_switch_layers);
+         base.palette = user.palette.or(base.palette);
+         base.extra_layers = user.extra_layers.or(base.extra_layers);
++        base.badge_file = user.badge_file.or(base.badge_file);
+     };
+     let palette: HashMap<String, Rgb> = base
+         .palette
+@@ -257,6 +264,7 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
+ 
+     let layers: Vec<FunctionLayer> = all.into_iter().map(FunctionLayer::with_config).collect();
+     let cfg = Config {
++        badge_file: base.badge_file.take(),
+         show_button_outlines: base.show_button_outlines.unwrap(),
+         enable_pixel_shift: base.enable_pixel_shift.unwrap(),
+         adaptive_brightness: base.adaptive_brightness.unwrap(),
+diff --git a/src/main.rs b/src/main.rs
+index 1389b29..ecf0267 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -114,6 +114,9 @@ struct Button {
+     /// Some(i) means pressing this button switches to layer i instead of
+     /// (or as well as) sending its keys.
+     switch_to: Option<usize>,
++    /// Key into the badge file, and the state last read for it.
++    badge_key: Option<String>,
++    badge: Option<String>,
+ }
+ 
+ fn try_load_svg(path: &str) -> Result<ButtonImage> {
+@@ -265,9 +268,11 @@ impl Button {
+     fn with_config(cfg: ButtonConfig) -> Button {
+         let colors = cfg.colors;
+         let switch_to = cfg.switch_to;
++        let badge_key = cfg.badge.clone();
+         let mut button = Button::image_from_config(cfg);
+         button.colors = colors;
+         button.switch_to = switch_to;
++        button.badge_key = badge_key;
+         button
+     }
+     fn image_from_config(cfg: ButtonConfig) -> Button {
+@@ -284,6 +289,7 @@ impl Button {
+                         cfg.fill.unwrap_or(false),
+                         cfg.path.clone(),
+                         cfg.account.clone(),
++                        cfg.text.clone(),
+                     ),
+                 ),
+                 (None, _) => {
+@@ -328,6 +334,8 @@ impl Button {
+             icon_height: 0.0,
+             colors: ButtonColors::default(),
+             switch_to: None,
++            badge_key: None,
++            badge: None,
+         }
+     }
+     fn new_spacer() -> Button {
+@@ -340,6 +348,8 @@ impl Button {
+             icon_height: 0.0,
+             colors: ButtonColors::default(),
+             switch_to: None,
++            badge_key: None,
++            badge: None,
+         }
+     }
+     fn new_text(text: String, action: Vec<Key>) -> Button {
+@@ -352,6 +362,8 @@ impl Button {
+             icon_height: 0.0,
+             colors: ButtonColors::default(),
+             switch_to: None,
++            badge_key: None,
++            badge: None,
+         }
+     }
+     fn new_icon(
+@@ -372,6 +384,8 @@ impl Button {
+             changed: false,
+             colors: ButtonColors::default(),
+             switch_to: None,
++            badge_key: None,
++            badge: None,
+         }
+     }
+     fn load_battery_image(icon: &str, theme: Option<impl AsRef<str>>) -> Handle {
+@@ -427,6 +441,8 @@ impl Button {
+             icon_height: 0.0,
+             colors: ButtonColors::default(),
+             switch_to: None,
++            badge_key: None,
++            badge: None,
+         }
+     }
+ 
+@@ -456,6 +472,8 @@ impl Button {
+             icon_height: 0.0,
+             colors: ButtonColors::default(),
+             switch_to: None,
++            badge_key: None,
++            badge: None,
+         }
+     }
+     fn needs_faster_refresh(&self) -> bool {
+@@ -632,6 +650,7 @@ pub struct FunctionLayer {
+     displays_time: bool,
+     displays_battery: bool,
+     displays_widget: bool,
++    displays_badge: bool,
+     buttons: Vec<(usize, Button)>,
+     virtual_button_count: usize,
+     faster_refresh: bool,
+@@ -647,6 +666,7 @@ impl FunctionLayer {
+         let displays_time = cfg.iter().any(|cfg| cfg.time.is_some());
+         let displays_battery = cfg.iter().any(|cfg| cfg.battery.is_some());
+         let displays_widget = cfg.iter().any(|cfg| cfg.widget.is_some());
++        let displays_badge = cfg.iter().any(|cfg| cfg.badge.is_some());
+         let buttons = cfg
+             .into_iter()
+             .scan(&mut virtual_button_count, |state, cfg| {
+@@ -665,6 +685,7 @@ impl FunctionLayer {
+             displays_time,
+             displays_battery,
+             displays_widget,
++            displays_badge,
+             buttons,
+             virtual_button_count,
+             faster_refresh,
+@@ -796,6 +817,21 @@ impl FunctionLayer {
+                 pixel_shift_y,
+             );
+ 
++            // A badge sits on the bottom edge, clear of any glyph above it.
++            if let Some(state) = &button.badge {
++                let (r, g, b) = match state.as_str() {
++                    "ask" => (0.953, 0.545, 0.659),  // #f38ba8 - wants you
++                    "done" => (0.651, 0.890, 0.631), // #a6e3a1 - finished
++                    _ => (0.804, 0.839, 0.957),
++                };
++                let radius = ((top - bot) * 0.09).max(2.5);
++                let cx = left_edge + button_width / 2.0;
++                let cy = top + pixel_shift_y - radius - 2.0;
++                c.set_source_rgb(r, g, b);
++                c.arc(cx, cy, radius, 0.0, std::f64::consts::TAU);
++                c.fill().unwrap();
++            }
++
+             button.changed = false;
+ 
+             if !complete_redraw {
+@@ -1049,6 +1085,28 @@ fn real_main(drm: &mut DrmBackend) {
+             next_timeout_ms = min(next_timeout_ms, WIDGET_TICK_MS);
+         }
+ 
++        if layers[active_layer].displays_badge {
++            let badges = cfg
++                .badge_file
++                .as_deref()
++                .and_then(|p| std::fs::read_to_string(p).ok())
++                .and_then(|s| toml::from_str::<HashMap<String, String>>(&s).ok())
++                .unwrap_or_default();
++            for button in &mut layers[active_layer].buttons {
++                let want = button
++                    .1
++                    .badge_key
++                    .as_ref()
++                    .and_then(|k| badges.get(k))
++                    .cloned();
++                if button.1.badge != want {
++                    button.1.badge = want;
++                    button.1.changed = true;
++                }
++            }
++            next_timeout_ms = min(next_timeout_ms, WIDGET_TICK_MS);
++        }
++
+         if layers[active_layer].displays_battery {
+             for button in &mut layers[active_layer].buttons {
+                 if let ButtonImage::Battery(_, _, _) = button.1.image {
+diff --git a/src/widget.rs b/src/widget.rs
+index a8c6fdc..f8ff470 100644
+--- a/src/widget.rs
++++ b/src/widget.rs
+@@ -104,6 +104,8 @@ pub struct Widget {
+     rings: [f64; 3],
+     path: Option<String>,
+     account: Option<String>,
++    /// Short tag drawn at the left of a bars widget, to tell accounts apart.
++    label: Option<String>,
+ }
+ 
+ impl Widget {
+@@ -114,6 +116,7 @@ impl Widget {
+         fill: bool,
+         path: Option<String>,
+         account: Option<String>,
++        label: Option<String>,
+     ) -> Widget {
+         let capacity = capacity.max(2);
+         Widget {
+@@ -126,6 +129,7 @@ impl Widget {
+             rings: [0.0; 3],
+             path,
+             account,
++            label,
+         }
+     }
+ 
+@@ -214,7 +218,7 @@ impl Widget {
+         match self.kind {
+             WidgetKind::Sparkline => self.render_sparkline(c, left_edge, width, bot, top, color),
+             WidgetKind::Rings => self.render_rings(c, left_edge, width, bot, top),
+-            WidgetKind::Bars => self.render_bars(c, left_edge, width, bot, top),
++            WidgetKind::Bars => self.render_bars(c, left_edge, width, bot, top, color),
+         }
+     }
+ 
+@@ -282,32 +286,45 @@ impl Widget {
+     /// Three stacked bars, outermost limit first. At 42px of button height a
+     /// concentric ring is only ~4px of stroke; a bar gets the full width and
+     /// reads from across a desk.
+-    fn render_bars(&self, c: &Context, left_edge: f64, width: f64, bot: f64, top: f64) {
++    fn render_bars(&self, c: &Context, left_edge: f64, width: f64, bot: f64, top: f64, color: Rgb) {
+         let h = top - bot;
+         let pad_x = 7.0;
+         let bar_h = (h / 5.0).max(4.0);
+         let gap = (h - bar_h * 3.0) / 4.0;
+ 
++        // Optional short tag at the left, so two accounts are distinguishable.
++        let mut bars_x = left_edge + pad_x;
++        if let Some(label) = &self.label {
++            c.set_font_size(h * 0.34);
++            let ext = c.text_extents(label).unwrap();
++            c.set_source_rgb(color.r, color.g, color.b);
++            c.move_to(bars_x, bot + h / 2.0 + ext.height() / 2.0);
++            c.show_text(label).unwrap();
++            bars_x += ext.width() + 6.0;
++        }
++        let label_w = bars_x - (left_edge + pad_x);
++
+         // Reserve room for the callout only if the button is wide enough.
+         let worst = self.rings.iter().cloned().fold(0.0f64, f64::max);
+         let label = format!("{}%", worst.round() as i64);
+         c.set_font_size(h * 0.40);
+         let text_w = c.text_extents(&label).unwrap().width();
+-        let show_text = width > text_w + 60.0;
+-        let track_w = width - pad_x * 2.0 - if show_text { text_w + 8.0 } else { 0.0 };
++        let show_text = width - label_w > text_w + 60.0;
++        let track_w =
++            width - pad_x * 2.0 - label_w - if show_text { text_w + 8.0 } else { 0.0 };
+ 
+         for (i, pct) in self.rings.iter().enumerate() {
+             let col = RING_COLORS[i];
+             let y = bot + gap + i as f64 * (bar_h + gap);
+             let r = bar_h / 2.0;
+ 
+-            rounded_bar(c, left_edge + pad_x, y, track_w, bar_h, r);
++            rounded_bar(c, bars_x, y, track_w, bar_h, r);
+             c.set_source_rgba(col.r, col.g, col.b, 0.22);
+             c.fill().unwrap();
+ 
+             let filled = (pct / 100.0).clamp(0.0, 1.0) * track_w;
+             if filled > 0.5 {
+-                rounded_bar(c, left_edge + pad_x, y, filled.max(bar_h), bar_h, r);
++                rounded_bar(c, bars_x, y, filled.max(bar_h), bar_h, r);
+                 c.set_source_rgb(col.r, col.g, col.b);
+                 c.fill().unwrap();
+             }
+-- 
+2.55.0
+

@@ -1,0 +1,344 @@
+From 846e54b081c08609fdd06b3888a39b4e9f865140 Mon Sep 17 00:00:00 2001
+From: Ravi <ravi@openloopagentics.com>
+Date: Wed, 9 Sep 2026 23:22:47 -0700
+Subject: [PATCH 03/18] Add usage-limit widgets: concentric rings and stacked
+ bars
+
+Two new widget kinds driven by a file source, for showing Claude usage limits
+on the touch bar: "rings" in the Apple-fitness idiom, and "bars" -- three
+stacked pills, which is what actually reads at 42px of button height, where a
+concentric ring gets only ~4px of stroke.
+
+The daemon drops privileges to `nobody` and runs with PrivateTmp, so it cannot
+read a user's ~/.claude.json or /run/user. Values arrive through a
+world-readable TOML file named by a Path key, written externally and selected
+per Account:
+
+  { Widget = "bars", Source = "file", Path = "/var/lib/claude-limits/limits.toml",
+    Account = "someone@example.com" }
+
+TOML rather than JSON because the daemon already links toml; no new crate.
+Colours are fixed per limit kind so the same limit reads the same in every
+account's widget.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0196XW9vTfjGeWDpHTAmYsws
+---
+ src/config.rs |   2 +
+ src/main.rs   |   2 +
+ src/widget.rs | 194 +++++++++++++++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 197 insertions(+), 1 deletion(-)
+
+diff --git a/src/config.rs b/src/config.rs
+index fbb00c0..04be13b 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -139,6 +139,8 @@ pub struct ButtonConfig {
+     pub source: Option<String>,
+     pub history: Option<usize>,
+     pub fill: Option<bool>,
++    pub path: Option<String>,
++    pub account: Option<String>,
+     /// Filled in by load_config once the palette is known; never deserialised.
+     #[serde(skip)]
+     pub colors: ButtonColors,
+diff --git a/src/main.rs b/src/main.rs
+index a9df782..3fabbdd 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -277,6 +277,8 @@ impl Button {
+                         source,
+                         cfg.history.unwrap_or(DEFAULT_HISTORY),
+                         cfg.fill.unwrap_or(false),
++                        cfg.path.clone(),
++                        cfg.account.clone(),
+                     ),
+                 ),
+                 (None, _) => {
+diff --git a/src/widget.rs b/src/widget.rs
+index d20ecb4..a8c6fdc 100644
+--- a/src/widget.rs
++++ b/src/widget.rs
+@@ -6,18 +6,42 @@ use std::collections::VecDeque;
+ use std::fs::read_to_string;
+ 
+ use crate::config::Rgb;
++use serde::Deserialize;
+ 
+ pub const DEFAULT_HISTORY: usize = 32;
+ 
++/// Fixed per limit kind, so the same limit is the same colour in every
++/// account's widget. Validated categorical slots 1/2/3 at dark-surface steps.
++const RING_COLORS: [Rgb; 3] = [
++    Rgb { r: 0.224, g: 0.529, b: 0.898 }, // 5-hourly      #3987e5
++    Rgb { r: 0.851, g: 0.349, b: 0.149 }, // weekly, all   #d95926
++    Rgb { r: 0.098, g: 0.620, b: 0.439 }, // weekly Fable  #199e70
++];
++
++/// A pill: used for both the track and the filled portion of a bar.
++fn rounded_bar(c: &Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
++    let r = r.min(w / 2.0).min(h / 2.0);
++    c.new_sub_path();
++    c.arc(x + w - r, y + r, r, -std::f64::consts::FRAC_PI_2, 0.0);
++    c.arc(x + w - r, y + h - r, r, 0.0, std::f64::consts::FRAC_PI_2);
++    c.arc(x + r, y + h - r, r, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
++    c.arc(x + r, y + r, r, std::f64::consts::PI, 1.5 * std::f64::consts::PI);
++    c.close_path();
++}
++
+ #[derive(Copy, Clone, Debug, PartialEq)]
+ pub enum WidgetKind {
+     Sparkline,
++    Rings,
++    Bars,
+ }
+ 
+ impl WidgetKind {
+     pub fn parse(s: &str) -> Option<WidgetKind> {
+         match s {
+             "sparkline" => Some(WidgetKind::Sparkline),
++            "rings" => Some(WidgetKind::Rings),
++            "bars" => Some(WidgetKind::Bars),
+             _ => None,
+         }
+     }
+@@ -27,6 +51,7 @@ impl WidgetKind {
+ pub enum SourceKind {
+     Cpu,
+     Memory,
++    File,
+ }
+ 
+ impl SourceKind {
+@@ -34,6 +59,7 @@ impl SourceKind {
+         match s {
+             "cpu" => Some(SourceKind::Cpu),
+             "mem" | "memory" => Some(SourceKind::Memory),
++            "file" => Some(SourceKind::File),
+             _ => None,
+         }
+     }
+@@ -47,6 +73,26 @@ struct CpuState {
+     idle: u64,
+ }
+ 
++/// Where a rings widget gets its three values. The daemon runs as `nobody`
++/// after privdrop and with PrivateTmp, so it cannot read a user's home or
++/// /run/user -- values are handed over in a world-readable TOML file instead.
++#[derive(Deserialize)]
++struct LimitsFile {
++    #[serde(default)]
++    account: Vec<AccountLimits>,
++}
++
++#[derive(Deserialize)]
++struct AccountLimits {
++    email: String,
++    #[serde(default)]
++    session: f64,
++    #[serde(default)]
++    weekly_all: f64,
++    #[serde(default)]
++    weekly_scoped: f64,
++}
++
+ pub struct Widget {
+     pub kind: WidgetKind,
+     source: SourceKind,
+@@ -54,10 +100,21 @@ pub struct Widget {
+     capacity: usize,
+     fill: bool,
+     cpu: CpuState,
++    /// rings widgets only: percentages 0-100, outermost first.
++    rings: [f64; 3],
++    path: Option<String>,
++    account: Option<String>,
+ }
+ 
+ impl Widget {
+-    pub fn new(kind: WidgetKind, source: SourceKind, capacity: usize, fill: bool) -> Widget {
++    pub fn new(
++        kind: WidgetKind,
++        source: SourceKind,
++        capacity: usize,
++        fill: bool,
++        path: Option<String>,
++        account: Option<String>,
++    ) -> Widget {
+         let capacity = capacity.max(2);
+         Widget {
+             kind,
+@@ -66,14 +123,21 @@ impl Widget {
+             capacity,
+             fill,
+             cpu: CpuState::default(),
++            rings: [0.0; 3],
++            path,
++            account,
+         }
+     }
+ 
+     /// Take one reading. Returns true if the drawn output would change.
+     pub fn sample(&mut self) -> bool {
++        if self.source == SourceKind::File {
++            return self.sample_file();
++        }
+         let value = match self.source {
+             SourceKind::Cpu => self.sample_cpu(),
+             SourceKind::Memory => sample_memory(),
++            SourceKind::File => unreachable!(),
+         };
+         let Some(value) = value else { return false };
+         if self.samples.len() == self.capacity {
+@@ -83,6 +147,30 @@ impl Widget {
+         true
+     }
+ 
++    fn sample_file(&mut self) -> bool {
++        let Some(path) = &self.path else { return false };
++        let Ok(text) = read_to_string(path) else { return false };
++        let Ok(parsed) = toml::from_str::<LimitsFile>(&text) else { return false };
++        let wanted = self.account.as_deref();
++        let Some(acct) = parsed
++            .account
++            .iter()
++            .find(|a| wanted.is_none_or(|w| a.email == w))
++        else {
++            return false;
++        };
++        let next = [
++            acct.session.clamp(0.0, 100.0),
++            acct.weekly_all.clamp(0.0, 100.0),
++            acct.weekly_scoped.clamp(0.0, 100.0),
++        ];
++        if next == self.rings {
++            return false;
++        }
++        self.rings = next;
++        true
++    }
++
+     fn sample_cpu(&mut self) -> Option<f64> {
+         let stat = read_to_string("/proc/stat").ok()?;
+         let line = stat.lines().next()?;
+@@ -125,6 +213,8 @@ impl Widget {
+     ) {
+         match self.kind {
+             WidgetKind::Sparkline => self.render_sparkline(c, left_edge, width, bot, top, color),
++            WidgetKind::Rings => self.render_rings(c, left_edge, width, bot, top),
++            WidgetKind::Bars => self.render_bars(c, left_edge, width, bot, top),
+         }
+     }
+ 
+@@ -185,6 +275,108 @@ impl Widget {
+     }
+ }
+ 
++impl Widget {
++    /// Three concentric arcs, outermost first, in the Apple-fitness idiom:
++    /// a full-circle track under each, a rounded cap, and the most-consumed
++    /// ring's value called out beside them so the button reads at a glance.
++    /// Three stacked bars, outermost limit first. At 42px of button height a
++    /// concentric ring is only ~4px of stroke; a bar gets the full width and
++    /// reads from across a desk.
++    fn render_bars(&self, c: &Context, left_edge: f64, width: f64, bot: f64, top: f64) {
++        let h = top - bot;
++        let pad_x = 7.0;
++        let bar_h = (h / 5.0).max(4.0);
++        let gap = (h - bar_h * 3.0) / 4.0;
++
++        // Reserve room for the callout only if the button is wide enough.
++        let worst = self.rings.iter().cloned().fold(0.0f64, f64::max);
++        let label = format!("{}%", worst.round() as i64);
++        c.set_font_size(h * 0.40);
++        let text_w = c.text_extents(&label).unwrap().width();
++        let show_text = width > text_w + 60.0;
++        let track_w = width - pad_x * 2.0 - if show_text { text_w + 8.0 } else { 0.0 };
++
++        for (i, pct) in self.rings.iter().enumerate() {
++            let col = RING_COLORS[i];
++            let y = bot + gap + i as f64 * (bar_h + gap);
++            let r = bar_h / 2.0;
++
++            rounded_bar(c, left_edge + pad_x, y, track_w, bar_h, r);
++            c.set_source_rgba(col.r, col.g, col.b, 0.22);
++            c.fill().unwrap();
++
++            let filled = (pct / 100.0).clamp(0.0, 1.0) * track_w;
++            if filled > 0.5 {
++                rounded_bar(c, left_edge + pad_x, y, filled.max(bar_h), bar_h, r);
++                c.set_source_rgb(col.r, col.g, col.b);
++                c.fill().unwrap();
++            }
++        }
++
++        if show_text {
++            let idx = self
++                .rings
++                .iter()
++                .enumerate()
++                .fold((0usize, -1.0f64), |a, (i, v)| if *v > a.1 { (i, *v) } else { a })
++                .0;
++            let col = RING_COLORS[idx];
++            c.set_source_rgb(col.r, col.g, col.b);
++            let ext = c.text_extents(&label).unwrap();
++            c.move_to(left_edge + width - pad_x - text_w, bot + h / 2.0 + ext.height() / 2.0);
++            c.show_text(&label).unwrap();
++        }
++    }
++
++    fn render_rings(&self, c: &Context, left_edge: f64, width: f64, bot: f64, top: f64) {
++        let h = top - bot;
++        let stroke = (h / 9.0).max(3.0);
++        let gap = stroke * 0.45;
++        let cy = bot + h / 2.0;
++        let cx = left_edge + h / 2.0 + 4.0;
++        let outer = h / 2.0 - stroke / 2.0 - 1.0;
++
++        for (i, pct) in self.rings.iter().enumerate() {
++            let r = outer - i as f64 * (stroke + gap);
++            if r <= stroke * 0.6 {
++                continue;
++            }
++            let col = RING_COLORS[i];
++            c.set_line_width(stroke);
++            c.set_line_cap(cairo::LineCap::Round);
++
++            c.set_source_rgba(col.r, col.g, col.b, 0.22);
++            c.arc(cx, cy, r, 0.0, std::f64::consts::TAU);
++            c.stroke().unwrap();
++
++            if *pct > 0.0 {
++                let sweep = (pct / 100.0).min(1.0) * std::f64::consts::TAU;
++                c.set_source_rgb(col.r, col.g, col.b);
++                let start = -std::f64::consts::FRAC_PI_2;
++                c.arc(cx, cy, r, start, start + sweep);
++                c.stroke().unwrap();
++            }
++        }
++
++        // Call out whichever limit is closest to its ceiling.
++        let (idx, worst) = self
++            .rings
++            .iter()
++            .enumerate()
++            .fold((0usize, 0.0f64), |acc, (i, v)| if *v > acc.1 { (i, *v) } else { acc });
++        let text = format!("{}%", worst.round() as i64);
++        let text_x = cx + h / 2.0 + 6.0;
++        if text_x < left_edge + width - 6.0 {
++            let col = RING_COLORS[idx];
++            c.set_source_rgb(col.r, col.g, col.b);
++            c.set_font_size(h * 0.42);
++            let ext = c.text_extents(&text).unwrap();
++            c.move_to(text_x, cy + ext.height() / 2.0);
++            c.show_text(&text).unwrap();
++        }
++    }
++}
++
+ fn sample_memory() -> Option<f64> {
+     let info = read_to_string("/proc/meminfo").ok()?;
+     let mut total = 0u64;
+-- 
+2.55.0
+

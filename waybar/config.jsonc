@@ -1,0 +1,85 @@
+{
+    "layer": "top",
+    "position": "top",
+    "height": 34,
+    "spacing": 4,
+
+    "modules-left":   ["ext/workspaces", "hyprland/submap"],
+    "modules-center": ["hyprland/window"],
+    "modules-right":  ["tray", "pulseaudio", "bluetooth", "network", "battery", "clock"],
+
+    // ext/workspaces activates over the ext-workspace-v1 protocol.
+    // hyprland/workspaces sends "dispatch workspace N", which the Lua
+    // config parser rejects, so its clicks silently do nothing.
+    "ext/workspaces": {
+        "format": "{name}",
+        "on-click": "activate"
+    },
+
+    "hyprland/submap": {
+        "format": "✦ {}",
+        "tooltip": false
+    },
+
+    "hyprland/window": {
+        "format": "{title}",
+        "max-length": 70,
+        "separate-outputs": true
+    },
+
+    "tray": {
+        "icon-size": 16,
+        "spacing": 10
+    },
+
+    "pulseaudio": {
+        "format": "{icon} {volume}%",
+        "format-muted": "󰝟 muted",
+        "format-icons": {
+            "headphone": "󰋋",
+            "default": ["󰕿", "󰖀", "󰕾"]
+        },
+        "on-click": "pavucontrol",
+        "on-scroll-up": "wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@ 5%+",
+        "on-scroll-down": "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"
+    },
+
+    "bluetooth": {
+        "format": "󰂯",
+        "format-disabled": "",
+        "format-off": "",
+        "format-connected": "󰂱 {num_connections}",
+        "tooltip-format": "{controller_alias}\t{controller_address}",
+        "tooltip-format-connected": "{device_enumerate}",
+        "on-click": "kitty -e bluetoothctl"
+    },
+
+    "network": {
+        "format-wifi": "󰖩 {essid}",
+        "format-ethernet": "󰈀 {ipaddr}",
+        "format-disconnected": "󰖪 offline",
+        "tooltip-format": "{ifname} · {ipaddr}/{cidr}  ↓{bandwidthDownBits} ↑{bandwidthUpBits}",
+        "on-click": "kitty -e nmtui"
+    },
+
+    "battery": {
+        "bat": "macsmc-battery",
+        "states": { "warning": 25, "critical": 12 },
+        "format": "{icon} {capacity}%",
+        "format-charging": "󰂄 {capacity}%",
+        "format-plugged": "󰚥 {capacity}%",
+        "format-icons": ["󰁺", "󰁽", "󰁿", "󰂁", "󰁹"],
+        "tooltip-format": "{timeTo} ({power}W)"
+    },
+
+    "clock": {
+        "format": "{:%a %d %b  %H:%M}",
+        "tooltip-format": "<tt><small>{calendar}</small></tt>",
+        "calendar": {
+            "mode": "month",
+            "format": {
+                "today": "<span color='#f5c2e7'><b>{}</b></span>"
+            }
+        }
+    }
+}

@@ -1,0 +1,198 @@
+From 8f279dc6f3546335115dc0470bc08e5a0bb1fbda Mon Sep 17 00:00:00 2001
+From: Ravikant Cherukuri <ravi@openloopagentics.com>
+Date: Fri, 11 Sep 2026 01:58:28 -0700
+Subject: [PATCH] Add a commits widget: three counts in one button
+
+Nothing on the strip said how much work had actually landed, and the answer
+lives on another machine entirely -- the repos are on the Mac mini, not here.
+
+Add a `commits` widget reading today / this week / this month from a TOML
+file, drawn as three whole numbers under one-letter tags. Counts, not
+proportions, so there are no bars: at arm's length the figure itself is the
+thing worth reading. Recency carries the emphasis, today at full strength and
+the longer windows set back, so the eye lands on the number that moves.
+
+File-backed like the usage bars, and for the same reason -- the daemon runs
+as `nobody` after privdrop and cannot read a home directory. It dims the
+whole button when the file stops being refreshed, because a counter that
+cannot say it is stale quietly lies.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01UmcdUC47KEJPE7hWccLyV6
+---
+ src/widget.rs | 96 ++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 95 insertions(+), 1 deletion(-)
+
+diff --git a/src/widget.rs b/src/widget.rs
+index 3643787..7a5b856 100644
+--- a/src/widget.rs
++++ b/src/widget.rs
+@@ -6,6 +6,7 @@ use librsvg_rebind::{prelude::HandleExt, Handle, Rectangle};
+ use std::collections::VecDeque;
+ use std::fs::read_to_string;
+ use std::path::PathBuf;
++use std::time::{SystemTime, UNIX_EPOCH};
+ 
+ use crate::config::Rgb;
+ use serde::Deserialize;
+@@ -36,6 +37,7 @@ pub enum WidgetKind {
+     Sparkline,
+     Rings,
+     Bars,
++    Commits,
+ }
+ 
+ impl WidgetKind {
+@@ -44,6 +46,7 @@ impl WidgetKind {
+             "sparkline" => Some(WidgetKind::Sparkline),
+             "rings" => Some(WidgetKind::Rings),
+             "bars" => Some(WidgetKind::Bars),
++            "commits" => Some(WidgetKind::Commits),
+             _ => None,
+         }
+     }
+@@ -105,6 +108,21 @@ struct AccountLimits {
+     weekly_scoped: f64,
+ }
+ 
++/// Where a commits widget gets its three figures: whole counts rather than
++/// percentages, written by `gitcommits` on a timer.
++#[derive(Deserialize)]
++struct CommitsFile {
++    #[serde(default)]
++    today: u64,
++    #[serde(default)]
++    week: u64,
++    #[serde(default)]
++    month: u64,
++    /// Unix time of the write, so a stale count can say so.
++    #[serde(default)]
++    updated: u64,
++}
++
+ pub struct Widget {
+     pub kind: WidgetKind,
+     source: SourceKind,
+@@ -114,7 +132,9 @@ pub struct Widget {
+     cpu: CpuState,
+     /// rings widgets only: percentages 0-100, outermost first.
+     rings: [f64; 3],
+-    /// True when the figures behind `rings` are known to be out of date.
++    /// commits widgets only: today, this week, this month.
++    counts: [u64; 3],
++    /// True when the figures behind `rings` or `counts` are out of date.
+     stale: bool,
+     path: Option<String>,
+     account: Option<String>,
+@@ -160,6 +180,7 @@ impl Widget {
+             fill,
+             cpu: CpuState::default(),
+             rings: [0.0; 3],
++            counts: [0; 3],
+             stale: false,
+             path,
+             account,
+@@ -187,6 +208,9 @@ impl Widget {
+     }
+ 
+     fn sample_file(&mut self) -> bool {
++        if self.kind == WidgetKind::Commits {
++            return self.sample_commits();
++        }
+         let Some(path) = &self.path else { return false };
+         let Ok(text) = read_to_string(path) else { return false };
+         let Ok(parsed) = toml::from_str::<LimitsFile>(&text) else { return false };
+@@ -213,6 +237,26 @@ impl Widget {
+         true
+     }
+ 
++    fn sample_commits(&mut self) -> bool {
++        let Some(path) = &self.path else { return false };
++        let Ok(text) = read_to_string(path) else { return false };
++        let Ok(parsed) = toml::from_str::<CommitsFile>(&text) else { return false };
++        let next = [parsed.today, parsed.week, parsed.month];
++        // The timer runs far more often than this; anything older has stopped
++        // being written, and a counter that cannot say it is stale lies.
++        let age = SystemTime::now()
++            .duration_since(UNIX_EPOCH)
++            .map(|d| d.as_secs().saturating_sub(parsed.updated))
++            .unwrap_or(0);
++        let stale = parsed.updated == 0 || age > 45 * 60;
++        if next == self.counts && stale == self.stale {
++            return false;
++        }
++        self.counts = next;
++        self.stale = stale;
++        true
++    }
++
+     fn sample_cpu(&mut self) -> Option<f64> {
+         let stat = read_to_string("/proc/stat").ok()?;
+         let line = stat.lines().next()?;
+@@ -261,6 +305,7 @@ impl Widget {
+             WidgetKind::Sparkline => self.render_sparkline(c, left_edge, width, bot, top, color),
+             WidgetKind::Rings => self.render_rings(c, left_edge, width, bot, top),
+             WidgetKind::Bars => self.render_bars(c, left_edge, width, bot, top, color),
++            WidgetKind::Commits => self.render_commits(c, left_edge, width, bot, top, color),
+         }
+         c.restore().unwrap();
+     }
+@@ -442,6 +487,55 @@ impl Widget {
+         }
+     }
+ 
++    /// Three whole numbers across the button -- today, this week, this month --
++    /// each under a one-letter tag. Counts, not proportions, so there are no
++    /// bars: the figure itself is the thing worth reading from arm's length.
++    fn render_commits(
++        &self,
++        c: &Context,
++        left_edge: f64,
++        width: f64,
++        bot: f64,
++        top: f64,
++        color: Rgb,
++    ) {
++        let h = top - bot;
++        let col = width / 3.0;
++        // Recency carries the emphasis: today is full strength, the longer
++        // windows sit back, so the eye lands on the figure that changes.
++        const WEIGHT: [f64; 3] = [1.0, 0.72, 0.5];
++        const TAGS: [&str; 3] = ["d", "w", "m"];
++        // Dim the lot when the figures have stopped being refreshed.
++        let fade = if self.stale { 0.4 } else { 1.0 };
++
++        let num_size = h * 0.46;
++        let tag_size = h * 0.24;
++        // Numerals and tag share a baseline block centred in the button: the
++        // count sits above, its tag tucked directly beneath.
++        let num_y = bot + h * 0.52;
++        let tag_y = bot + h * 0.86;
++
++        for i in 0..3 {
++            let centre = left_edge + col * (i as f64 + 0.5);
++            let label = self.counts[i].to_string();
++
++            c.set_font_size(num_size);
++            let ext = c.text_extents(&label).unwrap();
++            c.set_source_rgba(color.r, color.g, color.b, WEIGHT[i] * fade);
++            c.new_path();
++            c.move_to(centre - ext.width() / 2.0 - ext.x_bearing(), num_y);
++            c.show_text(&label).unwrap();
++
++            c.set_font_size(tag_size);
++            let text = TAGS[i];
++            let tag = c.text_extents(text).unwrap();
++            c.set_source_rgba(color.r, color.g, color.b, WEIGHT[i] * fade * 0.55);
++            c.new_path();
++            c.move_to(centre - tag.width() / 2.0 - tag.x_bearing(), tag_y);
++            c.show_text(text).unwrap();
++        }
++    }
++
+     fn render_rings(&self, c: &Context, left_edge: f64, width: f64, bot: f64, top: f64) {
+         let h = top - bot;
+         let stroke = (h / 9.0).max(3.0);
+-- 
+2.55.0
+

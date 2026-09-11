@@ -1,0 +1,91 @@
+From 3c55d84db54d691a861981174cdfee3aae297a5e Mon Sep 17 00:00:00 2001
+From: Ravikant Cherukuri <ravi@openloopagentics.com>
+Date: Thu, 10 Sep 2026 01:49:16 -0700
+Subject: [PATCH 13/18] Show a spinner while an agent is working
+
+The badge said an agent wanted you, or had finished, but nothing distinguished
+'working' from 'idle' -- the two look identical from across a room. Add a busy
+state drawn as a rotating arc in the same corner the counted pill uses, and
+raise the tick to 120ms while any button is spinning so the motion reads.
+
+The faster tick costs one small partial redraw per frame, and only while work
+is actually in progress.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0196XW9vTfjGeWDpHTAmYsws
+---
+ src/main.rs | 36 ++++++++++++++++++++++++++++++++++--
+ 1 file changed, 34 insertions(+), 2 deletions(-)
+
+diff --git a/src/main.rs b/src/main.rs
+index fc0a80d..6ce6ba2 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -63,6 +63,9 @@ const DEFAULT_ICON_SIZE: i32 = 48;
+ const TIMEOUT_MS: i32 = 10 * 1000;
+ // Widgets sample on their own cadence; the base timeout is far too slow.
+ const WIDGET_TICK_MS: i32 = 1000;
++// A spinner is only convincing if it moves; this costs one small
++// partial redraw per frame, and only while something is working.
++const SPINNER_TICK_MS: i32 = 120;
+ 
+ #[derive(Clone, Copy, PartialEq, Eq)]
+ enum BatteryState {
+@@ -833,7 +836,28 @@ impl FunctionLayer {
+             // grows sideways for two or more digits rather than shrinking the
+             // text. `bot` is the button's top edge (cairo y grows downward).
+             if let Some(badge) = &button.badge {
+-                if badge.count > 0 {
++                if badge.state == "busy" {
++                    // A rotating arc in the same corner the pill would occupy.
++                    c.save().unwrap();
++                    let h = top - bot;
++                    let rad = h * 0.17;
++                    let cx = left_edge + button_width - 3.0 - rad;
++                    let cy = bot + pixel_shift_y + rad + 2.0;
++                    let phase = std::time::SystemTime::now()
++                        .duration_since(std::time::UNIX_EPOCH)
++                        .map(|d| d.as_millis() as f64 / 700.0)
++                        .unwrap_or(0.0);
++                    let start = phase % std::f64::consts::TAU;
++                    c.set_line_width(rad * 0.55);
++                    c.set_line_cap(cairo::LineCap::Round);
++                    c.set_source_rgba(0.537, 0.706, 0.980, 0.30);
++                    c.arc(cx, cy, rad, 0.0, std::f64::consts::TAU);
++                    c.stroke().unwrap();
++                    c.set_source_rgb(0.537, 0.706, 0.980);
++                    c.arc(cx, cy, rad, start, start + std::f64::consts::FRAC_PI_2 * 1.6);
++                    c.stroke().unwrap();
++                    c.restore().unwrap();
++                } else if badge.count > 0 {
+                     c.save().unwrap(); // same reason: don't leak font size
+                     let (r, g, b) = match badge.state.as_str() {
+                         "ask" => (0.953, 0.545, 0.659),  // #f38ba8 - wants you
+@@ -1133,6 +1157,7 @@ fn real_main(drm: &mut DrmBackend) {
+                 .and_then(|p| std::fs::read_to_string(p).ok())
+                 .and_then(|s| toml::from_str::<HashMap<String, Badge>>(&s).ok())
+                 .unwrap_or_default();
++            let mut spinning = false;
+             for button in &mut layers[active_layer].buttons {
+                 let want = button
+                     .1
+@@ -1144,8 +1169,15 @@ fn real_main(drm: &mut DrmBackend) {
+                     button.1.badge = want;
+                     button.1.changed = true;
+                 }
++                if button.1.badge.as_ref().is_some_and(|b| b.state == "busy") {
++                    spinning = true;
++                    button.1.changed = true; // animate
++                }
+             }
+-            next_timeout_ms = min(next_timeout_ms, WIDGET_TICK_MS);
++            next_timeout_ms = min(
++                next_timeout_ms,
++                if spinning { SPINNER_TICK_MS } else { WIDGET_TICK_MS },
++            );
+         }
+ 
+         if layers[active_layer].displays_battery {
+-- 
+2.55.0
+

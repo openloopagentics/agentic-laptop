@@ -1,0 +1,68 @@
+From 238f34f1534fb164caaf302e7e8891189b918450 Mon Sep 17 00:00:00 2001
+From: Ravikant Cherukuri <ravi@openloopagentics.com>
+Date: Thu, 10 Sep 2026 01:57:27 -0700
+Subject: [PATCH 17/18] Spinner: larger, vertically centred, with the label
+ centred beside it
+
+A corner spinner was easy to miss. Grow it and centre it vertically at the
+left, and give the label the remaining width so it centres beside the ring
+rather than running underneath it.
+
+At 32px a long label can still exceed what is left on a narrow button; that is
+a label-length problem rather than a ring-size one, and no ring small enough to
+fix it is worth seeing.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0196XW9vTfjGeWDpHTAmYsws
+---
+ src/main.rs | 17 ++++++++++++-----
+ 1 file changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/src/main.rs b/src/main.rs
+index 17ad098..ce98453 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -824,11 +824,18 @@ impl FunctionLayer {
+                 Some(rgb) => c.set_source_rgb(rgb.r, rgb.g, rgb.b),
+                 None => c.set_source_rgb(1.0, 1.0, 1.0),
+             }
++            // A spinner occupies the left of the button, so the label centres
++            // in what is left rather than running underneath it.
++            let spinner_w = if button.badge.as_ref().is_some_and(|b| b.state == "busy") {
++                7.0 + (top - bot) * 0.52 + 5.0
++            } else {
++                0.0
++            };
+             button.render(
+                 &c,
+                 height,
+-                left_edge,
+-                button_width.ceil() as u64,
++                left_edge + spinner_w,
++                (button_width - spinner_w).max(1.0).ceil() as u64,
+                 pixel_shift_y,
+             );
+ 
+@@ -840,16 +847,16 @@ impl FunctionLayer {
+                     // A rotating arc in the same corner the pill would occupy.
+                     c.save().unwrap();
+                     let h = top - bot;
+-                    let rad = h * 0.17;
++                    let rad = h * 0.26;
+                     // clear of the pill's rounded corner, which starts 8px in
+                     let cx = left_edge + 7.0 + rad;
+-                    let cy = bot + pixel_shift_y + rad + 2.0;
++                    let cy = bot + pixel_shift_y + h / 2.0;
+                     let phase = std::time::SystemTime::now()
+                         .duration_since(std::time::UNIX_EPOCH)
+                         .map(|d| d.as_millis() as f64 / 700.0)
+                         .unwrap_or(0.0);
+                     let start = phase % std::f64::consts::TAU;
+-                    c.set_line_width(rad * 0.55);
++                    c.set_line_width(rad * 0.42);
+                     c.set_line_cap(cairo::LineCap::Round);
+                     // Rendering the label left a current point; without this,
+                     // arc() joins it to the arc and draws a line across the
+-- 
+2.55.0
+

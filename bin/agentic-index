@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Build a searchable index of every agent conversation, on every machine.
+
+Extraction runs at the source (the corpus is over a gigabyte on the remote
+host) and only compact records cross the network. The index is SQLite with
+FTS5, so search is a single query rather than a grep over a thousand files.
+
+Usage: agentic-index [host ...]
+"""
+import base64
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+
+DB = Path.home() / ".cache/agentic/index.db"
+EXTRACT = Path.home() / ".local/bin/agentic-extract"
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS messages(
+    host TEXT, project TEXT, session TEXT, ts TEXT, role TEXT, file TEXT, body TEXT);
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    body, host UNINDEXED, project UNINDEXED, session UNINDEXED,
+    ts UNINDEXED, role UNINDEXED, tokenize='porter unicode61');
+CREATE TABLE IF NOT EXISTS costs(
+    host TEXT, project TEXT, session TEXT PRIMARY KEY, usd REAL, start INTEGER, models TEXT);
+"""
+
+
+def source_stream(host):
+    """Run the extractor at `host`, yielding parsed records."""
+    if host == "local":
+        env = dict(os.environ, AGENTIC_HOST="local")
+        proc = subprocess.Popen([sys.executable, str(EXTRACT)], stdout=subprocess.PIPE,
+                                text=True, env=env, bufsize=1)
+    else:
+        # Ship the extractor itself: the remote host need not have it installed.
+        payload = base64.b64encode(EXTRACT.read_bytes()).decode()
+        cmd = (f"echo {payload} | base64 -d > /tmp/agentic-extract.py && "
+               f"AGENTIC_HOST={host} python3 /tmp/agentic-extract.py; "
+               f"rm -f /tmp/agentic-extract.py")
+        proc = subprocess.Popen(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30", host, cmd],
+            stdout=subprocess.PIPE, text=True, bufsize=1)
+    for line in proc.stdout:
+        try:
+            yield json.loads(line)
+        except ValueError:
+            continue
+
+
+def main():
+    # Named on the command line, or every node in the fleet file.
+    extra = sys.argv[1:]
+    if not extra:
+        fleet = Path.home() / ".config/claude-badged/fleet"
+        extra = fleet.read_text().split() if fleet.exists() else []
+    hosts = ["local"] + extra
+    DB.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(DB)
+    db.executescript(SCHEMA)
+
+    for host in hosts:
+        # Rebuild this host's rows wholesale: transcripts are append-only, and
+        # a full re-extract is simpler than tracking per-file offsets.
+        db.execute("DELETE FROM messages WHERE host = ?", (host,))
+        db.execute("DELETE FROM messages_fts WHERE host = ?", (host,))
+        db.execute("DELETE FROM costs WHERE host = ?", (host,))
+        msgs = costs = 0
+        for rec in source_stream(host):
+            if rec.get("k") == "m":
+                row = (rec["h"], rec.get("p"), rec.get("s"), rec.get("t"),
+                       rec.get("r"), rec.get("f"), rec.get("x"))
+                db.execute("INSERT INTO messages VALUES (?,?,?,?,?,?,?)", row)
+                db.execute(
+                    "INSERT INTO messages_fts(body,host,project,session,ts,role) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (rec.get("x"), rec["h"], rec.get("p"), rec.get("s"),
+                     rec.get("t"), rec.get("r")))
+                msgs += 1
+            elif rec.get("k") == "c":
+                db.execute(
+                    "INSERT OR REPLACE INTO costs VALUES (?,?,?,?,?,?)",
+                    (rec["h"], rec.get("p"), rec.get("s"), rec.get("usd"),
+                     rec.get("start"), ",".join(rec.get("models") or [])))
+                costs += 1
+            if (msgs + costs) % 2000 == 0:
+                db.commit()
+        db.commit()
+        print(f"  {host}: {msgs} messages, {costs} sessions")
+
+    db.execute("INSERT INTO messages_fts(messages_fts) VALUES('optimize')")
+    db.commit()
+    size = DB.stat().st_size / 1e6
+    print(f"  index: {DB}  ({size:.1f} MB)")
+
+
+if __name__ == "__main__":
+    main()

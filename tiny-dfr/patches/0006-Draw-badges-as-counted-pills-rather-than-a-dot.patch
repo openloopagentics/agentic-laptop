@@ -1,0 +1,125 @@
+From 94e611765f16928ed73d6245f4bc2aeee749b463 Mon Sep 17 00:00:00 2001
+From: Ravi <ravi@openloopagentics.com>
+Date: Wed, 9 Sep 2026 23:54:43 -0700
+Subject: [PATCH 06/18] Draw badges as counted pills rather than a dot
+
+A dot said only "something happened". Read the badge file as a state plus a
+count and draw the iOS-style pill: a rounded capsule in the button's top-right
+corner with the count in dark type, widening for two digits instead of
+shrinking the numeral, and capped at "99+".
+
+Colour still comes from the state, so a pending question and a finished
+command remain distinguishable at a glance.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0196XW9vTfjGeWDpHTAmYsws
+---
+ src/main.rs | 70 +++++++++++++++++++++++++++++++++++++++++------------
+ 1 file changed, 54 insertions(+), 16 deletions(-)
+
+diff --git a/src/main.rs b/src/main.rs
+index ecf0267..4017a84 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -51,6 +51,7 @@ mod pixel_shift;
+ use crate::config::ConfigManager;
+ use backlight::BacklightManager;
+ use config::{ButtonColors, ButtonConfig, Config, Rgb};
++use serde::Deserialize;
+ use widget::{SourceKind, Widget, WidgetKind, DEFAULT_HISTORY};
+ use display::DrmBackend;
+ use pixel_shift::{PixelShiftManager, PIXEL_SHIFT_WIDTH_PX};
+@@ -114,9 +115,19 @@ struct Button {
+     /// Some(i) means pressing this button switches to layer i instead of
+     /// (or as well as) sending its keys.
+     switch_to: Option<usize>,
+-    /// Key into the badge file, and the state last read for it.
++    /// Key into the badge file, and the entry last read for it.
+     badge_key: Option<String>,
+-    badge: Option<String>,
++    badge: Option<Badge>,
++}
++
++/// One entry in the badge file: what happened, and how many times since the
++/// workspace was last visited.
++#[derive(Deserialize, Clone, PartialEq, Debug)]
++struct Badge {
++    #[serde(default)]
++    state: String,
++    #[serde(default)]
++    count: u32,
+ }
+ 
+ fn try_load_svg(path: &str) -> Result<ButtonImage> {
+@@ -817,19 +828,46 @@ impl FunctionLayer {
+                 pixel_shift_y,
+             );
+ 
+-            // A badge sits on the bottom edge, clear of any glyph above it.
+-            if let Some(state) = &button.badge {
+-                let (r, g, b) = match state.as_str() {
+-                    "ask" => (0.953, 0.545, 0.659),  // #f38ba8 - wants you
+-                    "done" => (0.651, 0.890, 0.631), // #a6e3a1 - finished
+-                    _ => (0.804, 0.839, 0.957),
+-                };
+-                let radius = ((top - bot) * 0.09).max(2.5);
+-                let cx = left_edge + button_width / 2.0;
+-                let cy = top + pixel_shift_y - radius - 2.0;
+-                c.set_source_rgb(r, g, b);
+-                c.arc(cx, cy, radius, 0.0, std::f64::consts::TAU);
+-                c.fill().unwrap();
++            // A counted pill in the top-right corner, in the iOS idiom: it
++            // grows sideways for two or more digits rather than shrinking the
++            // text. `bot` is the button's top edge (cairo y grows downward).
++            if let Some(badge) = &button.badge {
++                if badge.count > 0 {
++                    let (r, g, b) = match badge.state.as_str() {
++                        "ask" => (0.953, 0.545, 0.659),  // #f38ba8 - wants you
++                        "done" => (0.651, 0.890, 0.631), // #a6e3a1 - finished
++                        _ => (0.804, 0.839, 0.957),
++                    };
++                    let label = if badge.count > 99 {
++                        "99+".to_string()
++                    } else {
++                        badge.count.to_string()
++                    };
++
++                    let h = top - bot;
++                    let rad = h * 0.21;
++                    c.set_font_size(rad * 1.35);
++                    let ext = c.text_extents(&label).unwrap();
++                    let pill_w = (ext.width() + rad * 1.1).max(rad * 2.0);
++                    let cy = bot + pixel_shift_y + rad + 1.0;
++                    let right = left_edge + button_width - 3.0;
++                    let left = right - pill_w;
++
++                    c.set_source_rgb(r, g, b);
++                    c.new_sub_path();
++                    c.arc(right - rad, cy, rad, -std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
++                    c.arc(left + rad, cy, rad, std::f64::consts::FRAC_PI_2, 1.5 * std::f64::consts::PI);
++                    c.close_path();
++                    c.fill().unwrap();
++
++                    // dark numeral: both badge colours are light
++                    c.set_source_rgb(0.12, 0.12, 0.18);
++                    c.move_to(
++                        (left + right) / 2.0 - ext.width() / 2.0 - ext.x_bearing(),
++                        cy + ext.height() / 2.0,
++                    );
++                    c.show_text(&label).unwrap();
++                }
+             }
+ 
+             button.changed = false;
+@@ -1090,7 +1128,7 @@ fn real_main(drm: &mut DrmBackend) {
+                 .badge_file
+                 .as_deref()
+                 .and_then(|p| std::fs::read_to_string(p).ok())
+-                .and_then(|s| toml::from_str::<HashMap<String, String>>(&s).ok())
++                .and_then(|s| toml::from_str::<HashMap<String, Badge>>(&s).ok())
+                 .unwrap_or_default();
+             for button in &mut layers[active_layer].buttons {
+                 let want = button
+-- 
+2.55.0
+

@@ -1,0 +1,108 @@
+From ddc0d2041a343a5187d619663abd33b3e2bf090d Mon Sep 17 00:00:00 2001
+From: Ravikant Cherukuri <ravi@openloopagentics.com>
+Date: Thu, 10 Sep 2026 01:30:16 -0700
+Subject: [PATCH 08/18] Bars widget: draw stale figures faint
+
+A usage bar looked identical whether its numbers were a minute or a day old,
+which made an out-of-date reading indistinguishable from a current one. Carry
+liveness and age in the handoff file and draw a stale account at reduced alpha,
+including its callout.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0196XW9vTfjGeWDpHTAmYsws
+---
+ src/widget.rs | 27 +++++++++++++++++++++++----
+ 1 file changed, 23 insertions(+), 4 deletions(-)
+
+diff --git a/src/widget.rs b/src/widget.rs
+index 4d2758d..3e76e90 100644
+--- a/src/widget.rs
++++ b/src/widget.rs
+@@ -76,6 +76,10 @@ struct CpuState {
+ /// Where a rings widget gets its three values. The daemon runs as `nobody`
+ /// after privdrop and with PrivateTmp, so it cannot read a user's home or
+ /// /run/user -- values are handed over in a world-readable TOML file instead.
++fn yes() -> bool {
++    true
++}
++
+ #[derive(Deserialize)]
+ struct LimitsFile {
+     #[serde(default)]
+@@ -85,6 +89,12 @@ struct LimitsFile {
+ #[derive(Deserialize)]
+ struct AccountLimits {
+     email: String,
++    /// False when the figures came from a cache rather than a live read, and
++    /// how old they are. A bar that cannot say it is stale quietly lies.
++    #[serde(default = "yes")]
++    live: bool,
++    #[serde(default)]
++    age_min: u64,
+     #[serde(default)]
+     session: f64,
+     #[serde(default)]
+@@ -102,6 +112,8 @@ pub struct Widget {
+     cpu: CpuState,
+     /// rings widgets only: percentages 0-100, outermost first.
+     rings: [f64; 3],
++    /// True when the figures behind `rings` are known to be out of date.
++    stale: bool,
+     path: Option<String>,
+     account: Option<String>,
+     /// Short tag drawn at the left of a bars widget, to tell accounts apart.
+@@ -127,6 +139,7 @@ impl Widget {
+             fill,
+             cpu: CpuState::default(),
+             rings: [0.0; 3],
++            stale: false,
+             path,
+             account,
+             label,
+@@ -168,10 +181,13 @@ impl Widget {
+             acct.weekly_all.clamp(0.0, 100.0),
+             acct.weekly_scoped.clamp(0.0, 100.0),
+         ];
+-        if next == self.rings {
++        // An hour is generous for a five-hour window.
++        let stale = !acct.live || acct.age_min > 60;
++        if next == self.rings && stale == self.stale {
+             return false;
+         }
+         self.rings = next;
++        self.stale = stale;
+         true
+     }
+ 
+@@ -323,14 +339,17 @@ impl Widget {
+             let y = bot + gap + i as f64 * (bar_h + gap);
+             let r = bar_h / 2.0;
+ 
++            // Stale figures are drawn faint, so an old reading never looks
++            // like a current one.
++            let (track_a, fill_a) = if self.stale { (0.14, 0.34) } else { (0.22, 1.0) };
+             rounded_bar(c, bars_x, y, track_w, bar_h, r);
+-            c.set_source_rgba(col.r, col.g, col.b, 0.22);
++            c.set_source_rgba(col.r, col.g, col.b, track_a);
+             c.fill().unwrap();
+ 
+             let filled = (pct / 100.0).clamp(0.0, 1.0) * track_w;
+             if filled > 0.5 {
+                 rounded_bar(c, bars_x, y, filled.max(bar_h), bar_h, r);
+-                c.set_source_rgb(col.r, col.g, col.b);
++                c.set_source_rgba(col.r, col.g, col.b, fill_a);
+                 c.fill().unwrap();
+             }
+         }
+@@ -343,7 +362,7 @@ impl Widget {
+                 .fold((0usize, -1.0f64), |a, (i, v)| if *v > a.1 { (i, *v) } else { a })
+                 .0;
+             let col = RING_COLORS[idx];
+-            c.set_source_rgb(col.r, col.g, col.b);
++            c.set_source_rgba(col.r, col.g, col.b, if self.stale { 0.45 } else { 1.0 });
+             let ext = c.text_extents(&label).unwrap();
+             c.move_to(left_edge + width - pad_x - text_w, bot + h / 2.0 + ext.height() / 2.0);
+             c.show_text(&label).unwrap();
+-- 
+2.55.0
+

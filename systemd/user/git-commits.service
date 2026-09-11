@@ -1,0 +1,14 @@
+[Unit]
+Description=Count today's/this week's/this month's commits for the Touch Bar
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Absolute paths and an explicit PATH: a user unit gets a minimal environment,
+# and gitcommits shells out to ssh.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Host, repo directory and author emails; optional -- see bin/gitcommits.
+EnvironmentFile=-%h/.config/agentic-laptop/gitcommits.env
+ExecStart=%h/.local/bin/gitcommits --toml /var/lib/claude-limits/commits.toml --hours /var/lib/claude-limits/commit-hours.json
+# The remote read can hang on a sleeping Mac mini; never let it pile up.
+TimeoutStartSec=90

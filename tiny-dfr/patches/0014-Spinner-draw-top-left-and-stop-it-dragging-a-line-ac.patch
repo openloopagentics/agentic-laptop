@@ -1,0 +1,75 @@
+From afdf1fe31d505a473109ae072543c83a8f37f302 Mon Sep 17 00:00:00 2001
+From: Ravikant Cherukuri <ravi@openloopagentics.com>
+Date: Thu, 10 Sep 2026 01:51:31 -0700
+Subject: [PATCH 14/18] Spinner: draw top-left, and stop it dragging a line
+ across the button
+
+cairo's arc() appends to the current path, joining whatever point was left
+behind. Rendering a button's label leaves one at the text baseline, so the
+spinner drew a line from the middle of the button out to its corner. Start a
+fresh path before each arc, here and in the rings widget, which has the same
+exposure via the previous button's label.
+
+Also move the spinner to the top-left, leaving the top-right for the counted
+badge.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0196XW9vTfjGeWDpHTAmYsws
+---
+ src/main.rs   | 7 ++++++-
+ src/widget.rs | 4 ++++
+ 2 files changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/src/main.rs b/src/main.rs
+index 6ce6ba2..681f01f 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -841,7 +841,7 @@ impl FunctionLayer {
+                     c.save().unwrap();
+                     let h = top - bot;
+                     let rad = h * 0.17;
+-                    let cx = left_edge + button_width - 3.0 - rad;
++                    let cx = left_edge + 3.0 + rad;
+                     let cy = bot + pixel_shift_y + rad + 2.0;
+                     let phase = std::time::SystemTime::now()
+                         .duration_since(std::time::UNIX_EPOCH)
+@@ -850,9 +850,14 @@ impl FunctionLayer {
+                     let start = phase % std::f64::consts::TAU;
+                     c.set_line_width(rad * 0.55);
+                     c.set_line_cap(cairo::LineCap::Round);
++                    // Rendering the label left a current point; without this,
++                    // arc() joins it to the arc and draws a line across the
++                    // button.
++                    c.new_path();
+                     c.set_source_rgba(0.537, 0.706, 0.980, 0.30);
+                     c.arc(cx, cy, rad, 0.0, std::f64::consts::TAU);
+                     c.stroke().unwrap();
++                    c.new_path();
+                     c.set_source_rgb(0.537, 0.706, 0.980);
+                     c.arc(cx, cy, rad, start, start + std::f64::consts::FRAC_PI_2 * 1.6);
+                     c.stroke().unwrap();
+diff --git a/src/widget.rs b/src/widget.rs
+index 706de47..3643787 100644
+--- a/src/widget.rs
++++ b/src/widget.rs
+@@ -458,6 +458,9 @@ impl Widget {
+             let col = RING_COLORS[i];
+             c.set_line_width(stroke);
+             c.set_line_cap(cairo::LineCap::Round);
++            // Whatever drew last may have left a current point, which arc()
++            // would join to.
++            c.new_path();
+ 
+             c.set_source_rgba(col.r, col.g, col.b, 0.22);
+             c.arc(cx, cy, r, 0.0, std::f64::consts::TAU);
+@@ -465,6 +468,7 @@ impl Widget {
+ 
+             if *pct > 0.0 {
+                 let sweep = (pct / 100.0).min(1.0) * std::f64::consts::TAU;
++                c.new_path();
+                 c.set_source_rgb(col.r, col.g, col.b);
+                 let start = -std::f64::consts::FRAC_PI_2;
+                 c.arc(cx, cy, r, start, start + sweep);
+-- 
+2.55.0
+

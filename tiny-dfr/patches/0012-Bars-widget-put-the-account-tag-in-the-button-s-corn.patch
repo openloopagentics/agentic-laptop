@@ -1,0 +1,85 @@
+From a31e922c7c894561a3b6251d1a813c3c8c57fe1b Mon Sep 17 00:00:00 2001
+From: Ravikant Cherukuri <ravi@openloopagentics.com>
+Date: Thu, 10 Sep 2026 01:45:17 -0700
+Subject: [PATCH 12/18] Bars widget: put the account tag in the button's corner
+
+Beside the mark, the tag cost the bars width for one character. In the
+button's own top-right corner it costs nothing, and the callout drops slightly
+to stay clear of it.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0196XW9vTfjGeWDpHTAmYsws
+---
+ src/widget.rs | 33 +++++++++++++++++----------------
+ 1 file changed, 17 insertions(+), 16 deletions(-)
+
+diff --git a/src/widget.rs b/src/widget.rs
+index 44f5b2a..706de47 100644
+--- a/src/widget.rs
++++ b/src/widget.rs
+@@ -339,6 +339,7 @@ impl Widget {
+         // hyphen stacks the halves rather than being drawn: two characters one
+         // above the other read better than three in a 42px-tall button.
+         let mut bars_x = left_edge + pad_x;
++        let mut corner_tag: Option<String> = None;
+         if let Some(label) = &self.label {
+             let mut lines: Vec<&str> = label.split('-').filter(|s| !s.is_empty()).collect();
+             c.set_source_rgb(color.r, color.g, color.b);
+@@ -350,23 +351,12 @@ impl Widget {
+                 // the account is a small superscript in its top-right corner,
+                 // the way a count sits on an app icon.
+                 let size = h * 0.78;
+-                let letter = lines.last().copied().unwrap_or("");
+                 let top = bot + (h - size) / 2.0;
+                 let _ = logo.render_document(c, &Rectangle::new(bars_x, top, size, size));
+-
+-                if !letter.is_empty() {
+-                    c.set_font_size(h * 0.30);
+-                    let ext = c.text_extents(letter).unwrap();
+-                    // sit just outside the mark's corner so it never overlaps
+-                    // the glyph itself
+-                    c.set_source_rgb(color.r, color.g, color.b);
+-                    c.move_to(bars_x + size - ext.x_bearing() - ext.width() * 0.15,
+-                              top + ext.height());
+-                    c.show_text(letter).unwrap();
+-                    bars_x += size + ext.width() * 0.9 + 5.0;
+-                } else {
+-                    bars_x += size + 5.0;
+-                }
++                bars_x += size + 6.0;
++                // The account tag goes in the button's own top-right corner,
++                // not beside the mark, so it costs the bars no width.
++                corner_tag = lines.last().copied().map(str::to_string);
+                 lines.clear();
+             }
+ 
+@@ -426,6 +416,15 @@ impl Widget {
+             }
+         }
+ 
++        if let Some(tag) = &corner_tag {
++            c.set_font_size(h * 0.30);
++            let ext = c.text_extents(tag).unwrap();
++            c.set_source_rgba(color.r, color.g, color.b, 0.85);
++            c.move_to(left_edge + width - pad_x - ext.width() - ext.x_bearing(),
++                      bot + ext.height() + 2.0);
++            c.show_text(tag).unwrap();
++        }
++
+         if show_text {
+             let idx = self
+                 .rings
+@@ -436,7 +435,9 @@ impl Widget {
+             let col = RING_COLORS[idx];
+             c.set_source_rgba(col.r, col.g, col.b, if self.stale { 0.45 } else { 1.0 });
+             let ext = c.text_extents(&label).unwrap();
+-            c.move_to(left_edge + width - pad_x - text_w, bot + h / 2.0 + ext.height() / 2.0);
++            let drop = if corner_tag.is_some() { h * 0.12 } else { 0.0 };
++            c.move_to(left_edge + width - pad_x - text_w,
++                      bot + h / 2.0 + ext.height() / 2.0 + drop);
+             c.show_text(&label).unwrap();
+         }
+     }
+-- 
+2.55.0
+

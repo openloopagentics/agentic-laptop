@@ -1,0 +1,115 @@
+From c7a3f6c7a7190954d1570b4da390081f6b5c248a Mon Sep 17 00:00:00 2001
+From: Ravikant Cherukuri <ravi@openloopagentics.com>
+Date: Fri, 11 Sep 2026 01:50:16 -0700
+Subject: [PATCH] Blow the label's glyphs apart through the burst
+
+The ring shattered and the label wobbled, but the label stayed one solid
+word while it did -- the only thing in the button that survived the
+explosion intact.
+
+Throw its glyphs too, inside the existing wobble: each one out from the
+middle of the word, alternately up and down, tumbling on its own centre
+rather than swinging from the baseline. The throw is a sine over the burst,
+so it is zero at both ends and the letters coast home rather than snapping
+back when it finishes, and the amplitude is kept short enough that no glyph
+is sliced by the button edge on the way out.
+
+Text only; an icon or widget button keeps the plain wobble.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01UmcdUC47KEJPE7hWccLyV6
+---
+ src/main.rs | 68 +++++++++++++++++++++++++++++++++++++++++++++--------
+ 1 file changed, 58 insertions(+), 10 deletions(-)
+
+diff --git a/src/main.rs b/src/main.rs
+index be6dd1e..6416989 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -861,11 +861,11 @@ impl FunctionLayer {
+             // its own centre, settling as the shards fade. Applied as a
+             // transform so it works whatever the button draws -- text, icon
+             // or widget.
+-            let danced = match button
++            let burst_t = button
+                 .burst
+                 .map(|st| st.elapsed().as_millis() as f64 / BURST_MS as f64)
+-                .filter(|t| *t < 1.0)
+-            {
++                .filter(|t| *t < 1.0);
++            let danced = match burst_t {
+                 Some(t) => {
+                     let bh = top - bot;
+                     let decay = (1.0 - t).powf(1.1);
+@@ -889,13 +889,61 @@ impl FunctionLayer {
+                 }
+                 None => false,
+             };
+-            button.render(
+-                &c,
+-                height,
+-                left_edge + spinner_w,
+-                (button_width - spinner_w).max(1.0).ceil() as u64,
+-                pixel_shift_y,
+-            );
++            // Inside that same wobble, a text label comes apart into its own
++            // glyphs and falls back into place. The throw is zero at both ends
++            // of the burst, so the letters land exactly where they started
++            // rather than snapping home when it finishes.
++            let mut blown_apart = false;
++            if let (Some(t), ButtonImage::Text(text)) = (burst_t, &button.image) {
++                if !text.is_empty() {
++                    let label_left = left_edge + spinner_w;
++                    let label_w = (button_width - spinner_w).max(1.0);
++                    let ext = c.text_extents(text).unwrap();
++                    let base_x = label_left + (label_w / 2.0 - ext.width() / 2.0).round();
++                    let base_y =
++                        pixel_shift_y + (height as f64 / 2.0 + ext.height() / 2.0).round();
++                    let bh = top - bot;
++                    let mid_x = label_left + label_w / 2.0;
++                    // Out fast, home slowly.
++                    let throw = (std::f64::consts::PI * t.powf(0.62)).sin();
++
++                    let mut pen = base_x;
++                    for (i, ch) in text.chars().enumerate() {
++                        let glyph = ch.to_string();
++                        let adv = c.text_extents(&glyph).unwrap().x_advance();
++                        // Pivot on the glyph's own middle, so it tumbles in
++                        // place rather than swinging on the baseline.
++                        let gx = pen + adv / 2.0;
++                        let gy = base_y - ext.height() / 2.0;
++                        // Thrown outward from the middle of the label, so the
++                        // word opens up instead of sliding sideways.
++                        let dx = (gx - mid_x) * 0.95 * throw;
++                        let dy = if i % 2 == 0 { -0.30 } else { 0.22 } * bh * throw;
++                        let spin = ((i as f64 * 1.7).sin() + 0.35) * 0.85 * throw;
++
++                        c.save().unwrap();
++                        c.translate(dx, dy);
++                        c.translate(gx, gy);
++                        c.rotate(spin);
++                        c.translate(-gx, -gy);
++                        c.new_path();
++                        c.move_to(pen, base_y);
++                        c.show_text(&glyph).unwrap();
++                        c.restore().unwrap();
++                        pen += adv;
++                    }
++                    blown_apart = true;
++                }
++            }
++            if !blown_apart {
++                button.render(
++                    &c,
++                    height,
++                    left_edge + spinner_w,
++                    (button_width - spinner_w).max(1.0).ceil() as u64,
++                    pixel_shift_y,
++                );
++            }
+             if danced {
+                 c.restore().unwrap();
+             }
+-- 
+2.55.0
+

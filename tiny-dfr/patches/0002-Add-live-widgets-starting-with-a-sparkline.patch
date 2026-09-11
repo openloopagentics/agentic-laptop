@@ -1,0 +1,405 @@
+From 869bdc88edf6be73c98419fc13bd0cb4c5c7ecff Mon Sep 17 00:00:00 2001
+From: Ravi <ravi@openloopagentics.com>
+Date: Wed, 9 Sep 2026 23:07:47 -0700
+Subject: [PATCH 02/18] Add live widgets, starting with a sparkline
+
+Buttons could only be text, an icon, a clock or a battery readout -- there was
+no way to plot a value that changes. At the panel's 2008x60 with ten buttons
+each one is a 186x42 cairo surface, which is ample for a real graph.
+
+Add a widget module with a sampled data source and a draw call that receives
+the button rectangle, so a widget fills its pill rather than centring a glyph.
+This commit ships one kind (sparkline) over two built-in sources (cpu from
+/proc/stat deltas, memory from /proc/meminfo), configured with:
+
+  { Widget = "sparkline", Source = "cpu", History = 32, Fill = true,
+    Color = "teal" }
+
+Samples are taken on the main loop, which clamps its timeout to 1s while a
+widget layer is active; only buttons whose sample changed are marked dirty, so
+the existing partial-redraw path still applies. Widgets reuse the Color key
+from the palette work for the line colour.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0196XW9vTfjGeWDpHTAmYsws
+---
+ src/config.rs |   4 +
+ src/main.rs   |  66 +++++++++++++++-
+ src/widget.rs | 204 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 273 insertions(+), 1 deletion(-)
+ create mode 100644 src/widget.rs
+
+diff --git a/src/config.rs b/src/config.rs
+index 2866b67..fbb00c0 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -135,6 +135,10 @@ pub struct ButtonConfig {
+     pub color: Option<String>,
+     pub background: Option<String>,
+     pub active_background: Option<String>,
++    pub widget: Option<String>,
++    pub source: Option<String>,
++    pub history: Option<usize>,
++    pub fill: Option<bool>,
+     /// Filled in by load_config once the palette is known; never deserialised.
+     #[serde(skip)]
+     pub colors: ButtonColors,
+diff --git a/src/main.rs b/src/main.rs
+index 81f17cb..a9df782 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -43,13 +43,15 @@ use udev::MonitorBuilder;
+ 
+ mod backlight;
+ mod config;
++mod widget;
+ mod display;
+ mod fonts;
+ mod pixel_shift;
+ 
+ use crate::config::ConfigManager;
+ use backlight::BacklightManager;
+-use config::{ButtonColors, ButtonConfig, Config};
++use config::{ButtonColors, ButtonConfig, Config, Rgb};
++use widget::{SourceKind, Widget, WidgetKind, DEFAULT_HISTORY};
+ use display::DrmBackend;
+ use pixel_shift::{PixelShiftManager, PIXEL_SHIFT_WIDTH_PX};
+ 
+@@ -58,6 +60,8 @@ const BUTTON_COLOR_INACTIVE: f64 = 0.200;
+ const BUTTON_COLOR_ACTIVE: f64 = 0.400;
+ const DEFAULT_ICON_SIZE: i32 = 48;
+ const TIMEOUT_MS: i32 = 10 * 1000;
++// Widgets sample on their own cadence; the base timeout is far too slow.
++const WIDGET_TICK_MS: i32 = 1000;
+ 
+ #[derive(Clone, Copy, PartialEq, Eq)]
+ enum BatteryState {
+@@ -94,6 +98,7 @@ enum ButtonImage {
+     Bitmap(ImageSurface),
+     Time(Vec<ChronoItem<'static>>, Locale),
+     Battery(String, BatteryIconMode, BatteryImages),
++    Widget(Widget),
+     Spacer,
+ }
+ 
+@@ -261,6 +266,29 @@ impl Button {
+         button
+     }
+     fn image_from_config(cfg: ButtonConfig) -> Button {
++        if let Some(widget) = cfg.widget.as_deref() {
++            let kind = WidgetKind::parse(widget);
++            let source = cfg.source.as_deref().and_then(SourceKind::parse);
++            return match (kind, source) {
++                (Some(kind), Some(source)) => Button::new_widget(
++                    cfg.action,
++                    Widget::new(
++                        kind,
++                        source,
++                        cfg.history.unwrap_or(DEFAULT_HISTORY),
++                        cfg.fill.unwrap_or(false),
++                    ),
++                ),
++                (None, _) => {
++                    eprintln!("tiny-dfr: unknown Widget {widget:?}");
++                    Button::new_text("?".to_string(), cfg.action)
++                }
++                (_, None) => {
++                    eprintln!("tiny-dfr: Widget {widget:?} needs a valid Source");
++                    Button::new_text("?".to_string(), cfg.action)
++                }
++            };
++        }
+         if let Some(text) = cfg.text {
+             Button::new_text(text, cfg.action)
+         } else if let Some(icon) = cfg.icon {
+@@ -283,6 +311,17 @@ impl Button {
+             Button::new_spacer()
+         }
+     }
++    fn new_widget(action: Vec<Key>, widget: Widget) -> Button {
++        Button {
++            action,
++            active: false,
++            changed: false,
++            image: ButtonImage::Widget(widget),
++            icon_width: 0.0,
++            icon_height: 0.0,
++            colors: ButtonColors::default(),
++        }
++    }
+     fn new_spacer() -> Button {
+         Button {
+             action: vec![],
+@@ -525,6 +564,17 @@ impl Button {
+                     c.show_text(&percent_str).unwrap();
+                 }
+             }
++            ButtonImage::Widget(w) => {
++                // Same vertical bounds the pill uses, so the plot sits inside it.
++                let bot = y_shift + (height as f64) * 0.15;
++                let top = y_shift + (height as f64) * 0.85;
++                let color = self.colors.fg.unwrap_or(Rgb {
++                    r: 1.0,
++                    g: 1.0,
++                    b: 1.0,
++                });
++                w.render(c, button_left_edge, button_width as f64, bot, top, color);
++            }
+             ButtonImage::Spacer => (),
+         }
+     }
+@@ -568,6 +618,7 @@ impl Button {
+ pub struct FunctionLayer {
+     displays_time: bool,
+     displays_battery: bool,
++    displays_widget: bool,
+     buttons: Vec<(usize, Button)>,
+     virtual_button_count: usize,
+     faster_refresh: bool,
+@@ -582,6 +633,7 @@ impl FunctionLayer {
+         let mut virtual_button_count = 0;
+         let displays_time = cfg.iter().any(|cfg| cfg.time.is_some());
+         let displays_battery = cfg.iter().any(|cfg| cfg.battery.is_some());
++        let displays_widget = cfg.iter().any(|cfg| cfg.widget.is_some());
+         let buttons = cfg
+             .into_iter()
+             .scan(&mut virtual_button_count, |state, cfg| {
+@@ -599,6 +651,7 @@ impl FunctionLayer {
+         FunctionLayer {
+             displays_time,
+             displays_battery,
++            displays_widget,
+             buttons,
+             virtual_button_count,
+             faster_refresh,
+@@ -972,6 +1025,17 @@ fn real_main(drm: &mut DrmBackend) {
+             needs_complete_redraw = true;
+             last_redraw_ts = current_ts;
+         }
++        if layers[active_layer].displays_widget {
++            for button in &mut layers[active_layer].buttons {
++                if let ButtonImage::Widget(w) = &mut button.1.image {
++                    if w.sample() {
++                        button.1.changed = true;
++                    }
++                }
++            }
++            next_timeout_ms = min(next_timeout_ms, WIDGET_TICK_MS);
++        }
++
+         if layers[active_layer].displays_battery {
+             for button in &mut layers[active_layer].buttons {
+                 if let ButtonImage::Battery(_, _, _) = button.1.image {
+diff --git a/src/widget.rs b/src/widget.rs
+new file mode 100644
+index 0000000..d20ecb4
+--- /dev/null
++++ b/src/widget.rs
+@@ -0,0 +1,204 @@
++//! Live value widgets: a data source sampled on the daemon's tick, drawn into
++//! the button rectangle rather than as a centred glyph.
++
++use cairo::Context;
++use std::collections::VecDeque;
++use std::fs::read_to_string;
++
++use crate::config::Rgb;
++
++pub const DEFAULT_HISTORY: usize = 32;
++
++#[derive(Copy, Clone, Debug, PartialEq)]
++pub enum WidgetKind {
++    Sparkline,
++}
++
++impl WidgetKind {
++    pub fn parse(s: &str) -> Option<WidgetKind> {
++        match s {
++            "sparkline" => Some(WidgetKind::Sparkline),
++            _ => None,
++        }
++    }
++}
++
++#[derive(Copy, Clone, Debug, PartialEq)]
++pub enum SourceKind {
++    Cpu,
++    Memory,
++}
++
++impl SourceKind {
++    pub fn parse(s: &str) -> Option<SourceKind> {
++        match s {
++            "cpu" => Some(SourceKind::Cpu),
++            "mem" | "memory" => Some(SourceKind::Memory),
++            _ => None,
++        }
++    }
++}
++
++/// Total and idle jiffies from the previous CPU sample. CPU use is only
++/// meaningful as a delta, so the first sample yields nothing.
++#[derive(Default)]
++struct CpuState {
++    total: u64,
++    idle: u64,
++}
++
++pub struct Widget {
++    pub kind: WidgetKind,
++    source: SourceKind,
++    samples: VecDeque<f64>,
++    capacity: usize,
++    fill: bool,
++    cpu: CpuState,
++}
++
++impl Widget {
++    pub fn new(kind: WidgetKind, source: SourceKind, capacity: usize, fill: bool) -> Widget {
++        let capacity = capacity.max(2);
++        Widget {
++            kind,
++            source,
++            samples: VecDeque::with_capacity(capacity),
++            capacity,
++            fill,
++            cpu: CpuState::default(),
++        }
++    }
++
++    /// Take one reading. Returns true if the drawn output would change.
++    pub fn sample(&mut self) -> bool {
++        let value = match self.source {
++            SourceKind::Cpu => self.sample_cpu(),
++            SourceKind::Memory => sample_memory(),
++        };
++        let Some(value) = value else { return false };
++        if self.samples.len() == self.capacity {
++            self.samples.pop_front();
++        }
++        self.samples.push_back(value.clamp(0.0, 1.0));
++        true
++    }
++
++    fn sample_cpu(&mut self) -> Option<f64> {
++        let stat = read_to_string("/proc/stat").ok()?;
++        let line = stat.lines().next()?;
++        let fields: Vec<u64> = line
++            .split_whitespace()
++            .skip(1)
++            .filter_map(|f| f.parse().ok())
++            .collect();
++        if fields.len() < 5 {
++            return None;
++        }
++        let total: u64 = fields.iter().sum();
++        let idle = fields[3] + fields[4]; // idle + iowait
++
++        let prev = std::mem::replace(
++            &mut self.cpu,
++            CpuState {
++                total,
++                idle,
++            },
++        );
++        if prev.total == 0 || total <= prev.total {
++            return None; // first sample, or the counter went backwards
++        }
++        let d_total = (total - prev.total) as f64;
++        let d_idle = (idle.saturating_sub(prev.idle)) as f64;
++        Some(1.0 - (d_idle / d_total))
++    }
++
++    /// Draw into the button rectangle. `bot` and `top` are the same vertical
++    /// bounds the button background uses, so the plot sits inside the pill.
++    pub fn render(
++        &self,
++        c: &Context,
++        left_edge: f64,
++        width: f64,
++        bot: f64,
++        top: f64,
++        color: Rgb,
++    ) {
++        match self.kind {
++            WidgetKind::Sparkline => self.render_sparkline(c, left_edge, width, bot, top, color),
++        }
++    }
++
++    fn render_sparkline(
++        &self,
++        c: &Context,
++        left_edge: f64,
++        width: f64,
++        bot: f64,
++        top: f64,
++        color: Rgb,
++    ) {
++        if self.samples.len() < 2 {
++            return;
++        }
++        let pad_x = 8.0;
++        let pad_y = 6.0;
++        let x0 = left_edge + pad_x;
++        let plot_w = (width - pad_x * 2.0).max(1.0);
++        let y0 = bot + pad_y;
++        let plot_h = (top - bot - pad_y * 2.0).max(1.0);
++
++        let n = self.samples.len();
++        let step = plot_w / (n - 1) as f64;
++        let point = |i: usize, v: f64| (x0 + i as f64 * step, y0 + (1.0 - v) * plot_h);
++
++        if self.fill {
++            let (fx, fy) = point(0, self.samples[0]);
++            c.move_to(fx, y0 + plot_h);
++            c.line_to(fx, fy);
++            for (i, v) in self.samples.iter().enumerate().skip(1) {
++                let (x, y) = point(i, *v);
++                c.line_to(x, y);
++            }
++            c.line_to(x0 + (n - 1) as f64 * step, y0 + plot_h);
++            c.close_path();
++            c.set_source_rgba(color.r, color.g, color.b, 0.30);
++            c.fill().unwrap();
++        }
++
++        c.set_source_rgb(color.r, color.g, color.b);
++        c.set_line_width(1.8);
++        c.set_line_join(cairo::LineJoin::Round);
++        for (i, v) in self.samples.iter().enumerate() {
++            let (x, y) = point(i, *v);
++            if i == 0 {
++                c.move_to(x, y);
++            } else {
++                c.line_to(x, y);
++            }
++        }
++        c.stroke().unwrap();
++
++        // emphasise the most recent reading
++        let (x, y) = point(n - 1, self.samples[n - 1]);
++        c.arc(x, y, 2.2, 0.0, std::f64::consts::TAU);
++        c.fill().unwrap();
++    }
++}
++
++fn sample_memory() -> Option<f64> {
++    let info = read_to_string("/proc/meminfo").ok()?;
++    let mut total = 0u64;
++    let mut available = 0u64;
++    for line in info.lines() {
++        let mut it = line.split_whitespace();
++        match it.next() {
++            Some("MemTotal:") => total = it.next()?.parse().ok()?,
++            Some("MemAvailable:") => available = it.next()?.parse().ok()?,
++            _ => continue,
++        }
++    }
++    if total == 0 {
++        return None;
++    }
++    Some(1.0 - (available as f64 / total as f64))
++}
+-- 
+2.55.0
+

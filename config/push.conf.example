@@ -1,0 +1,10 @@
+# Phone push for agent attention. Subscribe to this topic in the ntfy app
+# (iOS/Android) or at https://ntfy.sh/CHANGE-ME-to-a-long-random-topic
+#
+# The topic name is the only secret: anyone who knows it can read and post.
+# Regenerate by editing this file.
+topic = https://ntfy.sh/CHANGE-ME-to-a-long-random-topic
+# when: locked  -> only while the screen is locked (default)
+#       always  -> every ask, even at the keyboard
+#       never   -> disable
+when = locked

@@ -1,0 +1,77 @@
+From 541073d3e22ba5e259e3629259f993573f1b9336 Mon Sep 17 00:00:00 2001
+From: Ravikant Cherukuri <ravi@openloopagentics.com>
+Date: Fri, 11 Sep 2026 01:46:18 -0700
+Subject: [PATCH] Make the label dance through the burst
+
+The shards celebrated, but the label they burst around sat perfectly still
+through it, which read as two unrelated things happening in one button.
+
+Wobble it for the burst's lifetime: a hop, and a roll deliberately out of
+phase with the hop so it reads as a dance rather than a rocking chair, both
+damped to nothing as the shards fade. It is a transform around the label's
+own centre rather than anything text-specific, so an icon or widget button
+dances too, and it is clipped to the button for the same reason the shards
+are.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01UmcdUC47KEJPE7hWccLyV6
+---
+ src/main.rs | 35 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 35 insertions(+)
+
+diff --git a/src/main.rs b/src/main.rs
+index 38ee88a..be6dd1e 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -857,6 +857,38 @@ impl FunctionLayer {
+             } else {
+                 0.0
+             };
++            // While the burst plays, the label dances: a damped wobble about
++            // its own centre, settling as the shards fade. Applied as a
++            // transform so it works whatever the button draws -- text, icon
++            // or widget.
++            let danced = match button
++                .burst
++                .map(|st| st.elapsed().as_millis() as f64 / BURST_MS as f64)
++                .filter(|t| *t < 1.0)
++            {
++                Some(t) => {
++                    let bh = top - bot;
++                    let decay = (1.0 - t).powf(1.1);
++                    let beat = t * std::f64::consts::TAU * 2.5;
++                    let pivot_x =
++                        left_edge + spinner_w + (button_width - spinner_w).max(1.0) / 2.0;
++                    let pivot_y = bot + pixel_shift_y + bh / 2.0;
++                    c.save().unwrap();
++                    // A wobble can reach past the button; keep it off its
++                    // neighbours, as the shards are.
++                    c.new_path();
++                    c.rectangle(left_edge, bot + pixel_shift_y, button_width, bh);
++                    c.clip();
++                    c.new_path();
++                    // Hop, and roll a little out of phase with the hop, so it
++                    // reads as a dance rather than a rocking chair.
++                    c.translate(pivot_x, pivot_y - beat.sin().abs() * bh * 0.12 * decay);
++                    c.rotate((beat + 0.9).sin() * 0.13 * decay);
++                    c.translate(-pivot_x, -pivot_y);
++                    true
++                }
++                None => false,
++            };
+             button.render(
+                 &c,
+                 height,
+@@ -864,6 +896,9 @@ impl FunctionLayer {
+                 (button_width - spinner_w).max(1.0).ceil() as u64,
+                 pixel_shift_y,
+             );
++            if danced {
++                c.restore().unwrap();
++            }
+ 
+             // Work just finished: the spinner's ring breaks into shards and
+             // drifts apart. Same centre and radius as the arc, so it reads as
+-- 
+2.55.0
+

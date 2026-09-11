@@ -1,0 +1,31 @@
+From 80c1231fee073de7a68378c9aa15b4a9e0f6d1a3 Mon Sep 17 00:00:00 2001
+From: Ravikant Cherukuri <ravi@openloopagentics.com>
+Date: Thu, 10 Sep 2026 01:52:33 -0700
+Subject: [PATCH 15/18] Spinner: inset from the left edge
+
+At 3px the arc sat on the button's rounded corner. The corner radius is 8, so
+7px plus the arc radius clears it.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0196XW9vTfjGeWDpHTAmYsws
+---
+ src/main.rs | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/main.rs b/src/main.rs
+index 681f01f..32cc80f 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -841,7 +841,8 @@ impl FunctionLayer {
+                     c.save().unwrap();
+                     let h = top - bot;
+                     let rad = h * 0.17;
+-                    let cx = left_edge + 3.0 + rad;
++                    // clear of the pill's rounded corner, which starts 8px in
++                    let cx = left_edge + 7.0 + rad;
+                     let cy = bot + pixel_shift_y + rad + 2.0;
+                     let phase = std::time::SystemTime::now()
+                         .duration_since(std::time::UNIX_EPOCH)
+-- 
+2.55.0
+

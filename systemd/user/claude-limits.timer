@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh Claude usage limits every 5 minutes
+
+[Timer]
+OnStartupSec=30s
+OnUnitActiveSec=5min
+AccuracySec=20s
+# Catch up after resume rather than waiting a full interval.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

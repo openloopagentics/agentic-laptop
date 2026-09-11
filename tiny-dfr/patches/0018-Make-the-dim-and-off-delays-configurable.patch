@@ -1,0 +1,100 @@
+From b22ced8fc5e373c0ca0d7a034f64c509cbba2c73 Mon Sep 17 00:00:00 2001
+From: Ravikant Cherukuri <ravi@openloopagentics.com>
+Date: Thu, 10 Sep 2026 02:01:43 -0700
+Subject: [PATCH 18/18] Make the dim and off delays configurable
+
+The strip dimmed after 30s and went dark after 60s, both hard-coded as
+multiples of the loop timeout. Add DimTimeoutSec and OffTimeoutSec, defaulting
+to those same values so nothing changes for anyone who does not set them.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0196XW9vTfjGeWDpHTAmYsws
+---
+ src/backlight.rs |  9 ++++-----
+ src/config.rs    | 10 ++++++++++
+ 2 files changed, 14 insertions(+), 5 deletions(-)
+
+diff --git a/src/backlight.rs b/src/backlight.rs
+index 85d6a6c..4f260ea 100644
+--- a/src/backlight.rs
++++ b/src/backlight.rs
+@@ -1,5 +1,4 @@
+ use crate::config::Config;
+-use crate::TIMEOUT_MS;
+ use anyhow::{anyhow, Result};
+ use input::event::{
+     switch::{Switch, SwitchEvent, SwitchState},
+@@ -15,8 +14,8 @@ use std::{
+ 
+ const MAX_DISPLAY_BRIGHTNESS: u32 = 509;
+ const MAX_TOUCH_BAR_BRIGHTNESS: u32 = 255;
+-const BRIGHTNESS_DIM_TIMEOUT: i32 = TIMEOUT_MS * 3; // should be a multiple of TIMEOUT_MS
+-const BRIGHTNESS_OFF_TIMEOUT: i32 = TIMEOUT_MS * 6; // should be a multiple of TIMEOUT_MS
++// Dim and off delays come from the config now. While idle the main loop only
++// wakes every TIMEOUT_MS, so these are honoured to that granularity.
+ const DIMMED_BRIGHTNESS: u32 = 1;
+ 
+ fn read_attr(path: &Path, attr: &str) -> u32 {
+@@ -122,7 +121,7 @@ impl BacklightManager {
+             self.max_bl,
+             if self.lid_state == SwitchState::On {
+                 0
+-            } else if since_last_active < BRIGHTNESS_DIM_TIMEOUT as u64 {
++            } else if since_last_active < cfg.dim_timeout_sec as u64 * 1000 {
+                 if cfg.adaptive_brightness {
+                     let brightness = if let Some(path) = &self.display_bl_path {
+                         read_attr(path, "brightness")
+@@ -133,7 +132,7 @@ impl BacklightManager {
+                 } else {
+                     cfg.active_brightness
+                 }
+-            } else if since_last_active < BRIGHTNESS_OFF_TIMEOUT as u64 {
++            } else if since_last_active < cfg.off_timeout_sec as u64 * 1000 {
+                 DIMMED_BRIGHTNESS
+             } else {
+                 0
+diff --git a/src/config.rs b/src/config.rs
+index 0def8ba..af428d4 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -67,6 +67,9 @@ fn resolve_color(value: &Option<String>, palette: &HashMap<String, Rgb>) -> Opti
+ }
+ 
+ pub struct Config {
++    /// Seconds of inactivity before the strip dims, and before it goes dark.
++    pub dim_timeout_sec: u32,
++    pub off_timeout_sec: u32,
+     /// World-readable TOML of `key = "state"`, written by something outside
+     /// the daemon; `nobody` cannot read a user's home directory.
+     pub badge_file: Option<String>,
+@@ -91,6 +94,8 @@ struct ConfigProxy {
+     palette: Option<HashMap<String, String>>,
+     extra_layers: Option<HashMap<String, Vec<ButtonConfig>>>,
+     badge_file: Option<String>,
++    dim_timeout_sec: Option<u32>,
++    off_timeout_sec: Option<u32>,
+     primary_layer_keys: Option<Vec<ButtonConfig>>,
+     media_layer_keys: Option<Vec<ButtonConfig>>,
+ }
+@@ -195,6 +200,8 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
+         base.palette = user.palette.or(base.palette);
+         base.extra_layers = user.extra_layers.or(base.extra_layers);
+         base.badge_file = user.badge_file.or(base.badge_file);
++        base.dim_timeout_sec = user.dim_timeout_sec.or(base.dim_timeout_sec);
++        base.off_timeout_sec = user.off_timeout_sec.or(base.off_timeout_sec);
+     };
+     let palette: HashMap<String, Rgb> = base
+         .palette
+@@ -266,6 +273,9 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
+     let layers: Vec<FunctionLayer> = all.into_iter().map(FunctionLayer::with_config).collect();
+     let cfg = Config {
+         badge_file: base.badge_file.take(),
++        // Defaults reproduce the previous hard-coded 30s / 60s.
++        dim_timeout_sec: base.dim_timeout_sec.unwrap_or(30),
++        off_timeout_sec: base.off_timeout_sec.unwrap_or(60),
+         show_button_outlines: base.show_button_outlines.unwrap(),
+         enable_pixel_shift: base.enable_pixel_shift.unwrap(),
+         adaptive_brightness: base.adaptive_brightness.unwrap(),
+-- 
+2.55.0
+

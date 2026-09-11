@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Record an agent attention event, and notify directly.
+#
+# Runs on the node where the agent actually lives, so notifications do not
+# depend on any controller being awake. The log is still written, because a
+# controller that IS awake uses it to draw badges.
+#
+# usage: agentic-badge ask|done
+set -uo pipefail
+state=${1:?usage: agentic-badge ask|busy|done}
+conf="$HOME/.agentic/config"
+
+session=$(tmux display-message -p "#S" 2>/dev/null) || exit 0
+[ -n "$session" ] || exit 0
+
+printf '%s %s\n' "$session" "$state" >> "$HOME/.claude-badges.log"
+
+# Only a pending question is worth a phone notification; "busy" and "done"
+# are for badges on the strip.
+[ "$state" = "ask" ] || exit 0
+[ -f "$conf" ] || exit 0
+# shellcheck disable=SC1090
+. "$conf"
+[ -n "${NTFY_TOPIC:-}" ] || exit 0
+
+node=${NODE_NAME:-$(hostname -s)}
+actions=""
+if [ -n "${ACTION_TOKEN:-}" ] && [ -n "${ACTION_BIND:-}" ]; then
+    base="http://${ACTION_BIND}:${ACTION_PORT:-8787}/act?t=${ACTION_TOKEN}&s=${session}"
+    actions="http, Approve, ${base}&a=approve, method=POST, clear=true; http, Deny, ${base}&a=deny, method=POST, clear=true"
+fi
+
+curl -fsS -m 10 \
+    -H "Title: ${session} on ${node}" \
+    -H "Tags: bell" \
+    ${actions:+-H "Actions: $actions"} \
+    -d "An agent is waiting for input." \
+    "$NTFY_TOPIC" >/dev/null 2>&1 || true

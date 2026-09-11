@@ -1,0 +1,231 @@
+From 3a43dda19e91c6190c48b4b7dad4112dbd237058 Mon Sep 17 00:00:00 2001
+From: Ravikant Cherukuri <ravi@openloopagentics.com>
+Date: Fri, 11 Sep 2026 00:38:57 -0700
+Subject: [PATCH] Burst when a spinner finishes
+
+The spinner said an agent was working, but its ending was silent -- the arc
+simply vanished, and a glance a moment later could not tell "just finished"
+from "never started". On the busy -> not-busy edge the ring now breaks into
+shards and drifts apart in slow motion, from the arc's own centre and radius,
+so it reads as that arc coming apart rather than a new thing appearing.
+
+Slow enough to catch out of the corner of an eye: 1.6s, near-linear travel so
+the shards coast rather than snap to a stop, each with its own radial speed
+and sideways scatter, still turning as they go, fading over the last third.
+The debris is clipped to the button, or it would paint over its neighbours.
+The burst holds the spinner's slot, so the label settles once rather than
+twice, and ticks at 50ms only while one is alive.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01UmcdUC47KEJPE7hWccLyV6
+---
+ src/main.rs | 106 +++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 104 insertions(+), 2 deletions(-)
+
+diff --git a/src/main.rs b/src/main.rs
+index ce98453..38ee88a 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -66,6 +66,22 @@ const WIDGET_TICK_MS: i32 = 1000;
+ // A spinner is only convincing if it moves; this costs one small
+ // partial redraw per frame, and only while something is working.
+ const SPINNER_TICK_MS: i32 = 120;
++// When a spinner stops, the button throws a short burst where the arc was.
++// It is brief enough to afford a faster tick than the spinner it replaces.
++const BURST_MS: u128 = 1600;
++const BURST_TICK_MS: i32 = 50;
++const SHARDS: usize = 8;
++// Catppuccin green / yellow / peach / blue, as used elsewhere on the strip.
++const SHARD_COLORS: [(f64, f64, f64); 4] = [
++    (0.651, 0.890, 0.631),
++    (0.976, 0.886, 0.686),
++    (0.980, 0.702, 0.529),
++    (0.537, 0.706, 0.980),
++];
++// Per-shard radial speed and sideways scatter, so the ring comes apart
++// unevenly rather than expanding as one machined circle.
++const SHARD_DRIFT: [f64; SHARDS] = [1.00, 0.62, 1.38, 0.84, 1.12, 0.55, 1.45, 0.78];
++const SHARD_SCATTER: [f64; SHARDS] = [0.00, 0.22, -0.18, 0.30, -0.26, 0.14, -0.10, 0.24];
+ 
+ #[derive(Clone, Copy, PartialEq, Eq)]
+ enum BatteryState {
+@@ -121,6 +137,8 @@ struct Button {
+     /// Key into the badge file, and the entry last read for it.
+     badge_key: Option<String>,
+     badge: Option<Badge>,
++    /// Set the moment a badge stops being "busy", to play a one-shot burst.
++    burst: Option<Instant>,
+ }
+ 
+ /// One entry in the badge file: what happened, and how many times since the
+@@ -351,6 +369,7 @@ impl Button {
+             switch_to: None,
+             badge_key: None,
+             badge: None,
++            burst: None,
+         }
+     }
+     fn new_spacer() -> Button {
+@@ -365,6 +384,7 @@ impl Button {
+             switch_to: None,
+             badge_key: None,
+             badge: None,
++            burst: None,
+         }
+     }
+     fn new_text(text: String, action: Vec<Key>) -> Button {
+@@ -379,6 +399,7 @@ impl Button {
+             switch_to: None,
+             badge_key: None,
+             badge: None,
++            burst: None,
+         }
+     }
+     fn new_icon(
+@@ -401,6 +422,7 @@ impl Button {
+             switch_to: None,
+             badge_key: None,
+             badge: None,
++            burst: None,
+         }
+     }
+     fn load_battery_image(icon: &str, theme: Option<impl AsRef<str>>) -> Handle {
+@@ -458,6 +480,7 @@ impl Button {
+             switch_to: None,
+             badge_key: None,
+             badge: None,
++            burst: None,
+         }
+     }
+ 
+@@ -489,6 +512,7 @@ impl Button {
+             switch_to: None,
+             badge_key: None,
+             badge: None,
++            burst: None,
+         }
+     }
+     fn needs_faster_refresh(&self) -> bool {
+@@ -826,7 +850,9 @@ impl FunctionLayer {
+             }
+             // A spinner occupies the left of the button, so the label centres
+             // in what is left rather than running underneath it.
+-            let spinner_w = if button.badge.as_ref().is_some_and(|b| b.state == "busy") {
++            let spinner_w = if button.badge.as_ref().is_some_and(|b| b.state == "busy")
++                || button.burst.is_some()
++            {
+                 7.0 + (top - bot) * 0.52 + 5.0
+             } else {
+                 0.0
+@@ -839,6 +865,62 @@ impl FunctionLayer {
+                 pixel_shift_y,
+             );
+ 
++            // Work just finished: the spinner's ring breaks into shards and
++            // drifts apart. Same centre and radius as the arc, so it reads as
++            // that arc coming apart rather than a new thing appearing.
++            if let Some(started) = button.burst {
++                let t = (started.elapsed().as_millis() as f64 / BURST_MS as f64).min(1.0);
++                // Slow motion: barely any deceleration, so the shards coast
++                // instead of snapping to a stop.
++                let ease = 1.0 - (1.0 - t).powf(1.35);
++                let h = top - bot;
++                let rad = h * 0.26;
++                let cx = left_edge + 7.0 + rad;
++                let cy = bot + pixel_shift_y + h / 2.0;
++                // Hold full brightness through the drift, then fade over the
++                // last third, so the shards stay readable while they travel.
++                let alpha = ((1.0 - t) / 0.30).min(1.0);
++                // The ring keeps turning as it flies, like the spinner never
++                // quite stopped.
++                let spin = ease * 1.25;
++                // Each shard keeps its arc length, so its angular span narrows
++                // as it travels outward -- the ring visibly opens up.
++                let arc_len = std::f64::consts::TAU * rad / SHARDS as f64 * 0.75;
++
++                c.save().unwrap();
++                // Debris travels past the arc's own radius; without this it
++                // would paint over the buttons on either side.
++                c.new_path();
++                c.rectangle(left_edge, bot + pixel_shift_y, button_width, h);
++                c.clip();
++                // Rendering the label left a current point; without this the
++                // first arc would be joined to it.
++                c.new_path();
++                c.set_line_cap(cairo::LineCap::Round);
++                c.set_line_width((rad * 0.42 * (1.0 - ease * 0.30)).max(0.8));
++                for i in 0..SHARDS {
++                    let (r, g, b) = SHARD_COLORS[i % SHARD_COLORS.len()];
++                    let reach = rad * (1.0 + 0.95 * ease * SHARD_DRIFT[i]);
++                    let span = (arc_len / reach).min(std::f64::consts::TAU / SHARDS as f64);
++                    let mid = std::f64::consts::TAU * i as f64 / SHARDS as f64
++                        + spin
++                        + ease * SHARD_SCATTER[i];
++                    c.set_source_rgba(r, g, b, alpha);
++                    c.new_path();
++                    c.arc(cx, cy, reach, mid - span / 2.0, mid + span / 2.0);
++                    c.stroke().unwrap();
++                }
++                // A core that flares as the ring lets go, then collapses.
++                let flare = (1.0 - t / 0.22).max(0.0);
++                if flare > 0.0 {
++                    c.new_path();
++                    c.set_source_rgba(1.0, 1.0, 1.0, flare * 0.9);
++                    c.arc(cx, cy, rad * 0.55 * flare, 0.0, std::f64::consts::TAU);
++                    c.fill().unwrap();
++                }
++                c.restore().unwrap();
++            }
++
+             // A counted pill in the top-right corner, in the iOS idiom: it
+             // grows sideways for two or more digits rather than shrinking the
+             // text. `bot` is the button's top edge (cairo y grows downward).
+@@ -1174,6 +1256,7 @@ fn real_main(drm: &mut DrmBackend) {
+                 .and_then(|s| toml::from_str::<HashMap<String, Badge>>(&s).ok())
+                 .unwrap_or_default();
+             let mut spinning = false;
++            let mut bursting = false;
+             for button in &mut layers[active_layer].buttons {
+                 let want = button
+                     .1
+@@ -1182,6 +1265,12 @@ fn real_main(drm: &mut DrmBackend) {
+                     .and_then(|k| badges.get(k))
+                     .cloned();
+                 if button.1.badge != want {
++                    // Work just finished: celebrate it once, on the edge.
++                    let was = button.1.badge.as_ref().is_some_and(|b| b.state == "busy");
++                    let now = want.as_ref().is_some_and(|b| b.state == "busy");
++                    if was && !now {
++                        button.1.burst = Some(Instant::now());
++                    }
+                     button.1.badge = want;
+                     button.1.changed = true;
+                 }
+@@ -1189,10 +1278,23 @@ fn real_main(drm: &mut DrmBackend) {
+                     spinning = true;
+                     button.1.changed = true; // animate
+                 }
++                if button.1.burst.is_some_and(|t| t.elapsed().as_millis() >= BURST_MS) {
++                    button.1.burst = None;
++                    button.1.changed = true; // one last frame, to clear it
++                } else if button.1.burst.is_some() {
++                    bursting = true;
++                    button.1.changed = true; // animate
++                }
+             }
+             next_timeout_ms = min(
+                 next_timeout_ms,
+-                if spinning { SPINNER_TICK_MS } else { WIDGET_TICK_MS },
++                if bursting {
++                    BURST_TICK_MS
++                } else if spinning {
++                    SPINNER_TICK_MS
++                } else {
++                    WIDGET_TICK_MS
++                },
+             );
+         }
+ 
+-- 
+2.55.0
+

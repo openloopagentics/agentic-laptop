@@ -1,0 +1,288 @@
+From c678e6693ec2df750b84c01e82b21aa413bc7665 Mon Sep 17 00:00:00 2001
+From: Ravi <ravi@openloopagentics.com>
+Date: Wed, 9 Sep 2026 22:51:50 -0700
+Subject: [PATCH 01/18] Add per-button colours and a named palette
+
+Buttons were drawn with two scalar greyscale constants, so there was no way
+to express colour at all -- BUTTON_COLOR_INACTIVE: f64 = 0.200 was painted as
+set_source_rgb(color, color, color).
+
+Add an Rgb type parsed from #rrggbb, an optional [Palette] table of named
+colours, and three optional per-button keys: Color (foreground), Background
+and ActiveBackground. Values resolve as a palette name first, then as a hex
+literal; an unknown value is reported and ignored rather than fatal, so a typo
+during a live config reload cannot take the daemon down.
+
+Colours are resolved in load_config once the palette is known, so the draw
+path only ever sees Rgb. With no colour keys set, every button renders exactly
+as before.
+
+ButtonConfig also gains Default, which lets the synthetic esc button use
+struct update syntax instead of listing every field.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0196XW9vTfjGeWDpHTAmYsws
+---
+ src/config.rs | 95 +++++++++++++++++++++++++++++++++++++++++++++------
+ src/main.rs   | 31 +++++++++++++++--
+ 2 files changed, 114 insertions(+), 12 deletions(-)
+
+diff --git a/src/config.rs b/src/config.rs
+index 063c318..2866b67 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -12,10 +12,60 @@ use serde::{
+     de::{self, Visitor},
+     Deserialize, Deserializer,
+ };
+-use std::{fmt, fs::read_to_string, os::fd::AsFd};
++use std::{collections::HashMap, fmt, fs::read_to_string, os::fd::AsFd};
+ 
+ const USER_CFG_PATH: &str = "/etc/tiny-dfr/config.toml";
+ 
++/// A resolved colour. Stored as cairo's 0.0-1.0 components so the draw path
++/// can hand it straight to set_source_rgb.
++#[derive(Copy, Clone, Debug, PartialEq)]
++pub struct Rgb {
++    pub r: f64,
++    pub g: f64,
++    pub b: f64,
++}
++
++impl Rgb {
++    pub fn from_hex(s: &str) -> Option<Rgb> {
++        let s = s.strip_prefix('#').unwrap_or(s);
++        if s.len() != 6 {
++            return None;
++        }
++        let v = u32::from_str_radix(s, 16).ok()?;
++        Some(Rgb {
++            r: ((v >> 16) & 0xff) as f64 / 255.0,
++            g: ((v >> 8) & 0xff) as f64 / 255.0,
++            b: (v & 0xff) as f64 / 255.0,
++        })
++    }
++}
++
++/// Per-button colour overrides. All optional: None everywhere reproduces the
++/// stock greyscale appearance exactly.
++#[derive(Copy, Clone, Debug, Default)]
++pub struct ButtonColors {
++    pub fg: Option<Rgb>,
++    pub bg: Option<Rgb>,
++    pub active_bg: Option<Rgb>,
++}
++
++/// Resolve a config string that is either a palette name or a #rrggbb literal.
++/// A bad value is reported and ignored rather than fatal, so a typo during a
++/// live config reload cannot take the daemon down.
++fn resolve_color(value: &Option<String>, palette: &HashMap<String, Rgb>) -> Option<Rgb> {
++    let name = value.as_ref()?;
++    if let Some(rgb) = palette.get(name) {
++        return Some(*rgb);
++    }
++    match Rgb::from_hex(name) {
++        Some(rgb) => Some(rgb),
++        None => {
++            eprintln!("tiny-dfr: unknown colour {name:?} (not a palette name or #rrggbb)");
++            None
++        }
++    }
++}
++
+ pub struct Config {
+     pub show_button_outlines: bool,
+     pub enable_pixel_shift: bool,
+@@ -35,6 +85,7 @@ struct ConfigProxy {
+     adaptive_brightness: Option<bool>,
+     active_brightness: Option<u32>,
+     double_press_switch_layers: Option<u32>,
++    palette: Option<HashMap<String, String>>,
+     primary_layer_keys: Option<Vec<ButtonConfig>>,
+     media_layer_keys: Option<Vec<ButtonConfig>>,
+ }
+@@ -66,7 +117,7 @@ where
+     deserializer.deserialize_any(ArrayOrSingle)
+ }
+ 
+-#[derive(Deserialize)]
++#[derive(Deserialize, Default)]
+ #[serde(rename_all = "PascalCase")]
+ pub struct ButtonConfig {
+     #[serde(alias = "Svg")]
+@@ -81,6 +132,12 @@ pub struct ButtonConfig {
+     pub stretch: Option<usize>,
+     pub icon_width: Option<i32>,
+     pub icon_height: Option<i32>,
++    pub color: Option<String>,
++    pub background: Option<String>,
++    pub active_background: Option<String>,
++    /// Filled in by load_config once the palette is known; never deserialised.
++    #[serde(skip)]
++    pub colors: ButtonColors,
+ }
+ 
+ fn load_font(name: &str) -> FontFace {
+@@ -115,7 +172,22 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
+         base.primary_layer_keys = user.primary_layer_keys.or(base.primary_layer_keys);
+         base.active_brightness = user.active_brightness.or(base.active_brightness);
+         base.double_press_switch_layers = user.double_press_switch_layers.or(base.double_press_switch_layers);
++        base.palette = user.palette.or(base.palette);
+     };
++    let palette: HashMap<String, Rgb> = base
++        .palette
++        .take()
++        .unwrap_or_default()
++        .into_iter()
++        .filter_map(|(name, value)| match Rgb::from_hex(&value) {
++            Some(rgb) => Some((name, rgb)),
++            None => {
++                eprintln!("tiny-dfr: palette entry {name:?} = {value:?} is not #rrggbb");
++                None
++            }
++        })
++        .collect();
++
+     let mut media_layer_keys = base.media_layer_keys.unwrap();
+     let mut primary_layer_keys = base.primary_layer_keys.unwrap();
+     if width >= 2170 {
+@@ -123,20 +195,23 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
+             layer.insert(
+                 0,
+                 ButtonConfig {
+-                    icon: None,
+                     text: Some("esc".into()),
+-                    theme: None,
+                     action: vec![Key::Esc],
+-                    stretch: None,
+-                    time: None,
+-                    locale: None,
+-                    battery: None,
+-                    icon_width: None,
+-                    icon_height: None,
++                    ..Default::default()
+                 },
+             );
+         }
+     }
++    for layer in [&mut media_layer_keys, &mut primary_layer_keys] {
++        for button in layer.iter_mut() {
++            button.colors = ButtonColors {
++                fg: resolve_color(&button.color, &palette),
++                bg: resolve_color(&button.background, &palette),
++                active_bg: resolve_color(&button.active_background, &palette),
++            };
++        }
++    }
++
+     let media_layer = FunctionLayer::with_config(media_layer_keys);
+     let fkey_layer = FunctionLayer::with_config(primary_layer_keys);
+     let layers = if base.media_layer_default.unwrap() {
+diff --git a/src/main.rs b/src/main.rs
+index 8b1f1c0..81f17cb 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -49,7 +49,7 @@ mod pixel_shift;
+ 
+ use crate::config::ConfigManager;
+ use backlight::BacklightManager;
+-use config::{ButtonConfig, Config};
++use config::{ButtonColors, ButtonConfig, Config};
+ use display::DrmBackend;
+ use pixel_shift::{PixelShiftManager, PIXEL_SHIFT_WIDTH_PX};
+ 
+@@ -104,6 +104,8 @@ struct Button {
+     action: Vec<Key>,
+     icon_width: f64,
+     icon_height: f64,
++    /// None everywhere means "draw exactly as stock did".
++    colors: ButtonColors,
+ }
+ 
+ fn try_load_svg(path: &str) -> Result<ButtonImage> {
+@@ -253,6 +255,12 @@ fn get_battery_state(battery: &str) -> (u32, BatteryState) {
+ 
+ impl Button {
+     fn with_config(cfg: ButtonConfig) -> Button {
++        let colors = cfg.colors;
++        let mut button = Button::image_from_config(cfg);
++        button.colors = colors;
++        button
++    }
++    fn image_from_config(cfg: ButtonConfig) -> Button {
+         if let Some(text) = cfg.text {
+             Button::new_text(text, cfg.action)
+         } else if let Some(icon) = cfg.icon {
+@@ -283,6 +291,7 @@ impl Button {
+             image: ButtonImage::Spacer,
+             icon_width: 0.0,
+             icon_height: 0.0,
++            colors: ButtonColors::default(),
+         }
+     }
+     fn new_text(text: String, action: Vec<Key>) -> Button {
+@@ -293,6 +302,7 @@ impl Button {
+             image: ButtonImage::Text(text),
+             icon_width: 0.0,
+             icon_height: 0.0,
++            colors: ButtonColors::default(),
+         }
+     }
+     fn new_icon(
+@@ -311,6 +321,7 @@ impl Button {
+             icon_height: icon_height as f64,
+             active: false,
+             changed: false,
++            colors: ButtonColors::default(),
+         }
+     }
+     fn load_battery_image(icon: &str, theme: Option<impl AsRef<str>>) -> Handle {
+@@ -364,6 +375,7 @@ impl Button {
+             ),
+             icon_width: 0.0,
+             icon_height: 0.0,
++            colors: ButtonColors::default(),
+         }
+     }
+ 
+@@ -391,6 +403,7 @@ impl Button {
+             image: ButtonImage::Time(format_items, locale),
+             icon_width: 0.0,
+             icon_height: 0.0,
++            colors: ButtonColors::default(),
+         }
+     }
+     fn needs_faster_refresh(&self) -> bool {
+@@ -527,6 +540,17 @@ impl Button {
+         }
+     }
+     fn set_background_color(&self, c: &Context, color: f64) {
++        // An explicit Background/ActiveBackground wins outright, including when
++        // ShowButtonOutlines is off -- asking for a colour means wanting it drawn.
++        let override_bg = if self.active {
++            self.colors.active_bg.or(self.colors.bg)
++        } else {
++            self.colors.bg
++        };
++        if let Some(rgb) = override_bg {
++            c.set_source_rgb(rgb.r, rgb.g, rgb.b);
++            return;
++        }
+         if let ButtonImage::Battery(battery, _, _) = &self.image {
+             let (_, state) = get_battery_state(battery);
+             match state {
+@@ -694,7 +718,10 @@ impl FunctionLayer {
+                 c.close_path();
+                 c.fill().unwrap();
+             }
+-            c.set_source_rgb(1.0, 1.0, 1.0);
++            match button.colors.fg {
++                Some(rgb) => c.set_source_rgb(rgb.r, rgb.g, rgb.b),
++                None => c.set_source_rgb(1.0, 1.0, 1.0),
++            }
+             button.render(
+                 &c,
+                 height,
+-- 
+2.55.0
+

@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Answer an agent's prompt on this node, from anywhere on the tailnet.
+
+The controller laptop may be closed; this runs where the agent runs, so the
+Approve/Deny buttons in a notification always have something to talk to.
+
+Narrow by construction: bound to this node's tailnet address, token required,
+two named actions mapping to fixed keystrokes, and a short window that drops
+the duplicate calls a retrying notification service produces.
+"""
+import hmac
+import os
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+CONF = Path.home() / ".agentic/config"
+
+# launchd gives a service a minimal PATH, so Homebrew's tmux is not on it.
+# Resolve once, explicitly, rather than trusting the environment.
+TMUX = (shutil.which("tmux")
+        or next((p for p in ("/opt/homebrew/bin/tmux", "/usr/local/bin/tmux",
+                             "/usr/bin/tmux") if os.path.exists(p)), "tmux"))
+ACTIONS = {"approve": ["1", "Enter"], "deny": ["Escape"]}
+SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+DEDUP_SECONDS = 8
+
+_recent, _recent_lock = {}, threading.Lock()
+
+
+def config():
+    cfg = {}
+    for line in CONF.read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if "=" in line:
+            k, _, v = line.partition("=")
+            cfg[k.strip()] = v.strip().strip('"')
+    return cfg
+
+
+def duplicate(session, action):
+    now = time.monotonic()
+    with _recent_lock:
+        if now - _recent.get((session, action), 0) < DEDUP_SECONDS:
+            return True
+        _recent[(session, action)] = now
+        for k, ts in list(_recent.items()):
+            if now - ts > DEDUP_SECONDS * 10:
+                del _recent[k]
+    return False
+
+
+def session_exists(name):
+    r = subprocess.run([TMUX, "has-session", "-t", name], capture_output=True)
+    return r.returncode == 0
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        sys.stderr.write("agentic-actiond: " + fmt % args + "\n")
+
+    def reply(self, code, body):
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(body.encode())
+
+    def do_POST(self):
+        self.do_GET()
+
+    def do_GET(self):
+        try:
+            self.handle_act()
+        except Exception as e:                      # noqa: BLE001 - last resort
+            self.log_message("error: %r", e)
+            try:
+                self.reply(500, "internal error")
+            except Exception:
+                pass
+
+    def handle_act(self):
+        q = parse_qs(urlparse(self.path).query)
+        want = self.server.cfg.get("ACTION_TOKEN", "")
+        if not want or not hmac.compare_digest(q.get("t", [""])[0], want):
+            return self.reply(403, "no")
+        session = q.get("s", [""])[0]
+        action = q.get("a", [""])[0]
+        if action not in ACTIONS:
+            return self.reply(400, "unknown action")
+        if not SAFE_NAME.match(session):
+            return self.reply(400, "bad session")
+        if not session_exists(session):
+            return self.reply(404, "no such session")
+        if duplicate(session, action):
+            self.log_message("ignored duplicate %s -> %s", action, session)
+            return self.reply(200, "already sent")
+        r = subprocess.run([TMUX, "send-keys", "-t", session, *ACTIONS[action]],
+                           capture_output=True, text=True, timeout=15)
+        if r.returncode != 0:
+            return self.reply(502, "send-keys failed")
+        self.log_message("%s -> %s", action, session)
+        self.reply(200, f"{action} sent to {session}")
+
+
+def main():
+    cfg = config()
+    bind = cfg.get("ACTION_BIND", "127.0.0.1")
+    port = int(cfg.get("ACTION_PORT", "8787"))
+    srv = HTTPServer((bind, port), Handler)
+    srv.cfg = cfg
+    print(f"agentic-actiond on {bind}:{port}", file=sys.stderr)
+    srv.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Attach to a named tmux session on the remote host, creating it if absent.
+#
+# The host is $AGENTIC_REMOTE, or else the first node in the fleet file that
+# `agentic-fleet install` maintains.
+set -euo pipefail
+s=${1:?usage: r <session>}
+host=${AGENTIC_REMOTE:-$(head -n1 "$HOME/.config/claude-badged/fleet" 2>/dev/null || true)}
+[ -n "$host" ] || { echo "r: no remote host -- set AGENTIC_REMOTE or run: agentic-fleet install <host>" >&2; exit 1; }
+exec kitten ssh -t "$host" "tmux new -A -s '$s'"

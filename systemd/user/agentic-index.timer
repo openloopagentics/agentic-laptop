@@ -1,0 +1,11 @@
+[Unit]
+Description=Reindex agent conversations hourly
+
+[Timer]
+OnStartupSec=5min
+OnUnitActiveSec=1h
+AccuracySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# Count commits you authored across the repos on one remote host.
+#
+# Writes two files from one remote read:
+#   --toml   the three counts the Touch Bar widget draws (today/week/month)
+#   --hours  this month's commits bucketed by day and hour, for the overlay
+#
+# The daemon runs as `nobody` after privdrop, so figures are handed over in
+# world-readable files rather than read from a home directory.
+set -uo pipefail
+
+# Where the repos live: one host, and a directory whose immediate children
+# are git checkouts. The host defaults to the first node in the fleet file.
+# Set these in ~/.config/agentic-laptop/gitcommits.env for the systemd unit;
+# quote the root there, so ~ reaches the remote host unexpanded.
+HOST=${GITCOMMITS_HOST:-$(head -n1 "$HOME/.config/claude-badged/fleet" 2>/dev/null || true)}
+ROOT=${GITCOMMITS_ROOT:-'~/src'}
+# Comma-separated author emails to count; anything else (bots, collaborators)
+# is ignored. Defaults to the remote's own `git config --global user.email`.
+AUTHORS=${GITCOMMITS_AUTHORS:-}
+# How far back --hours reaches. The overlay can only page through months it
+# has; 18 covers every repo here with room to spare.
+MONTHS=${GITCOMMITS_MONTHS:-18}
+OUT=""
+HOURS=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --toml)  OUT="$2"; shift 2 ;;
+        --hours) HOURS="$2"; shift 2 ;;
+        --host)  HOST="$2"; shift 2 ;;
+        *) echo "usage: gitcommits [--toml PATH] [--hours PATH] [--host HOST]" >&2; exit 2 ;;
+    esac
+done
+
+if [ -z "$HOST" ]; then
+    echo "gitcommits: no host -- set GITCOMMITS_HOST or run: agentic-fleet install <host>" >&2
+    exit 2
+fi
+
+month_start=$(date +%Y-%m-01)
+today=$(date +%F)
+# ISO week: Monday. %u is 1..7 with Monday = 1.
+week_start=$(date -d "-$(( $(date +%u) - 1 )) days" +%F)
+# git --since filters on commit date, but the buckets below use author date;
+# reach back far enough that a rebase cannot hide a commit authored this month.
+since=$(date -d "$month_start -14 days" +%F)
+# --hours needs history the counts do not, so it drives the remote read.
+hours_since=$(date -d "$month_start -$MONTHS months" +%F)
+[ -n "${HOURS:-}" ] && since=$hours_since
+
+log=$(timeout 90 ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" "
+    echo \"@@author \$(git config --global user.email)\"
+    for d in $ROOT/*/; do
+        [ -d \"\$d/.git\" ] || continue
+        git -C \"\$d\" log --all --since='$since' --format='%aI %ae' 2>/dev/null
+    done
+" 2>/dev/null)
+
+# The remote's own identity arrives on a marker line ahead of the log.
+if [ -z "$AUTHORS" ]; then
+    AUTHORS=$(printf '%s\n' "$log" | sed -n 's/^@@author //p' | head -n1)
+fi
+log=$(printf '%s\n' "$log" | grep -v '^@@author ' || true)
+if [ -z "$AUTHORS" ]; then
+    echo "gitcommits: no author email -- set GITCOMMITS_AUTHORS" >&2
+    exit 2
+fi
+if [ -z "$log" ]; then
+    echo "gitcommits: no commits read from $HOST:$ROOT" >&2
+    exit 1
+fi
+
+# One atomic write, so a reader never sees half a file.
+put() {
+    local dest=$1 tmp
+    if [ "$dest" = /dev/stdout ]; then cat; return; fi
+    tmp=$(mktemp "${dest}.XXXXXX") || return 1
+    cat > "$tmp"
+    chmod 644 "$tmp"
+    mv -f "$tmp" "$dest"
+}
+
+mine=$(printf '%s\n' "$log" | awk -v authors="$AUTHORS" '
+    BEGIN { n = split(authors, a, ","); for (i = 1; i <= n; i++) want[a[i]] = 1 }
+    ($2 in want) { print $1 }
+')
+
+# Neither file asked for: print the counts, which is what a person running it
+# by hand wants to see.
+[ -z "$OUT" ] && [ -z "$HOURS" ] && OUT=/dev/stdout
+
+if [ -n "$OUT" ]; then
+    printf '%s\n' "$mine" | awk -v today="$today" -v wk="$week_start" \
+        -v ms="$month_start" -v now="$(date +%s)" '
+        {
+            d = substr($0, 1, 10)
+            if (d >= ms)    m++
+            if (d >= wk)    w++
+            if (d == today) t++
+        }
+        END {
+            printf "today = %d\nweek = %d\nmonth = %d\nupdated = %d\n",
+                   t + 0, w + 0, m + 0, now
+        }
+    ' | put "$OUT"
+fi
+
+if [ -n "$HOURS" ]; then
+    # Every month that has commits, each as a day x hour matrix, so the
+    # overlay can page between them without touching the network. Only the
+    # overlay parses this; the daemon reads the small counts file instead.
+    printf '%s\n' "$mine" | python3 -c '
+import calendar, json, sys, time
+
+months = {}
+for line in sys.stdin:
+    line = line.strip()
+    if len(line) < 13:
+        continue
+    key, dom, hour = line[:7], int(line[8:10]), int(line[11:13])
+    m = months.setdefault(key, {})
+    m[(dom, hour)] = m.get((dom, hour), 0) + 1
+
+out = []
+for key in sorted(months):
+    year, mon = (int(x) for x in key.split("-"))
+    ndays = calendar.monthrange(year, mon)[1]
+    grid = [[0] * 24 for _ in range(ndays)]
+    hours = [0] * 24
+    total = 0
+    for (dom, hour), n in months[key].items():
+        if 1 <= dom <= ndays and 0 <= hour < 24:
+            grid[dom - 1][hour] += n
+            hours[hour] += n
+            total += n
+    out.append({"month": key, "total": total, "hours": hours, "days": grid})
+
+json.dump({"updated": int(time.time()), "months": out}, sys.stdout)
+sys.stdout.write("\n")
+' | put "$HOURS"
+fi

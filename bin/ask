@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Search every agent conversation, on every machine.
+
+    ask displayport alt mode
+    ask --project alpha  tmux
+    ask -n 20 "cairo font"
+
+Ranked by FTS5 relevance, newest first among equals.
+"""
+import argparse
+import sqlite3
+import sys
+from pathlib import Path
+
+DB = Path.home() / ".cache/agentic/index.db"
+
+BOLD, DIM, RESET = "\033[1m", "\033[2m", "\033[0m"
+
+
+def main():
+    ap = argparse.ArgumentParser(description="search agent conversations")
+    ap.add_argument("query", nargs="+")
+    ap.add_argument("-n", type=int, default=10, help="results (default 10)")
+    ap.add_argument("--project", help="restrict to one project")
+    ap.add_argument("--host", help="restrict to one machine")
+    ap.add_argument("--full", action="store_true", help="print the whole message")
+    args = ap.parse_args()
+
+    if not DB.exists():
+        sys.exit("no index yet -- run: agentic-index")
+
+    q = " ".join(args.query)
+    sql = ["SELECT project, host, ts, role, "
+           "snippet(messages_fts, 0, '\x01', '\x02', '…', 18), body "
+           "FROM messages_fts WHERE messages_fts MATCH ?"]
+    params = [q]
+    if args.project:
+        sql.append("AND project = ?"); params.append(args.project)
+    if args.host:
+        sql.append("AND host = ?"); params.append(args.host)
+    sql.append("ORDER BY rank, ts DESC LIMIT ?")
+    params.append(args.n)
+
+    db = sqlite3.connect(DB)
+    db.create_function("noop", 1, lambda x: x)
+    try:
+        rows = db.execute(" ".join(sql), params).fetchall()
+    except sqlite3.OperationalError as e:
+        sys.exit(f"bad query: {e}")
+
+    if not rows:
+        print("no matches")
+        return 1
+
+    for project, host, ts, role, snip, body in rows:
+        when = (ts or "")[:16].replace("T", " ")
+        print(f"{BOLD}{project}{RESET} {DIM}· {host} · {when} · {role}{RESET}")
+        text = body if args.full else snip
+        text = text.replace("\x01", BOLD).replace("\x02", RESET)
+        for line in text.strip().splitlines():
+            print("  " + line)
+        print()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

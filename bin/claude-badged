@@ -1,0 +1,324 @@
+#!/usr/bin/env python3
+"""Bridge agent attention events onto the Touch Bar.
+
+Agents run in tmux on this machine and on remote hosts; their hooks append
+"<tmux-session> ask|done" to ~/.claude-badges.log wherever they run. This
+tails every such log, maps sessions to workspaces, and maintains a badge file.
+
+Two things make it more than a tail:
+
+  * Byte offsets are tracked per source and persisted, so a dropped ssh
+    connection resumes exactly where it left off instead of skipping whatever
+    arrived during the gap. Tailscale SSH forces re-auth periodically, so this
+    is a routine event, not an edge case.
+
+  * Hyprland's event socket is watched, so entering a workspace clears its
+    badge, and an event for the workspace you are already looking at is
+    dropped rather than badging something you can see.
+
+Usage: claude-badged [host ...]      (the local machine is always included)
+"""
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+LOG = "~/.claude-badges.log"
+OUT = Path("/var/lib/claude-limits/badges.toml")
+STATE = Path.home() / ".cache/claude-badged/offsets.json"
+PUSH_CONF = Path.home() / ".config/claude-badged/push.conf"
+
+badges = {}
+current_ws = None
+lock = threading.Lock()
+offsets = {}
+offsets_lock = threading.Lock()
+
+
+def load_offsets():
+    global offsets
+    try:
+        offsets = json.loads(STATE.read_text())
+    except Exception:
+        offsets = {}
+
+
+def save_offset(source, pos):
+    with offsets_lock:
+        offsets[source] = pos
+        STATE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STATE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(offsets))
+        tmp.replace(STATE)
+
+
+def push_config():
+    """topic + when, or None if push is not configured."""
+    try:
+        cfg = {}
+        for line in PUSH_CONF.read_text().splitlines():
+            line = line.split("#", 1)[0].strip()
+            if "=" in line:
+                k, _, v = line.partition("=")
+                cfg[k.strip()] = v.strip()
+        return cfg if cfg.get("topic") else None
+    except FileNotFoundError:
+        return None
+
+
+def screen_locked():
+    """A badge helps nobody behind a locked screen; that is when to push."""
+    return subprocess.run(["pgrep", "-x", "hyprlock"],
+                          capture_output=True).returncode == 0
+
+
+def push(ws, session, host):
+    cfg = push_config()
+    if not cfg:
+        return
+    when = cfg.get("when", "locked")
+    if when == "never" or (when == "locked" and not screen_locked()):
+        return
+
+    headers = [
+        "-H", f"Title: {ws} needs you",
+        "-H", "Tags: bell",
+    ]
+    # Action buttons answer the prompt without going to the laptop. They point
+    # at claude-actiond, which is reachable over the tailnet only.
+    token = cfg.get("action_token")
+    bind = cfg.get("action_bind")
+    port = cfg.get("action_port", "8787")
+    if token and bind:
+        base = f"http://{bind}:{port}/act?t={token}&h={host}&s={session}"
+        headers += ["-H", "Actions: "
+                    f"http, Approve, {base}&a=approve, method=POST, clear=true; "
+                    f"http, Deny, {base}&a=deny, method=POST, clear=true"]
+    try:
+        subprocess.run(
+            ["curl", "-fsS", "-m", "10", *headers,
+             "-d", f"{session} on {host} is waiting for input.",
+             cfg["topic"]],
+            capture_output=True, timeout=15)
+    except Exception as e:
+        print(f"claude-badged: push failed: {e}", file=sys.stderr)
+
+
+def workspace_of(name):
+    """alpha, alpha1, alpha2 and alpha.1 all belong to workspace 'alpha'."""
+    name = name.split(".", 1)[0]
+    return re.sub(r"\d+$", "", name) or name
+
+
+# If a Stop never arrives -- the session was killed, the host slept -- a badge
+# would spin indefinitely. Treat work as abandoned after this long.
+BUSY_EXPIRY_SEC = 30 * 60
+
+
+def expire_busy():
+    """Drop busy badges whose work has plainly stopped."""
+    now = time.time()
+    stale = [k for k, v in badges.items()
+             if v.get("state") == "busy" and now - v.get("since", now) > BUSY_EXPIRY_SEC]
+    for k in stale:
+        del badges[k]
+    return bool(stale)
+
+
+def flush():
+    body = "".join(
+        f'{k} = {{ state = "{v["state"]}", count = {v["count"]}, '
+        f'since = {int(v.get("since", 0))} }}\n'
+        for k, v in sorted(badges.items())
+    )
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    tmp = OUT.with_suffix(".tmp")
+    tmp.write_text(body)
+    tmp.chmod(0o644)          # tiny-dfr reads this as `nobody`
+    tmp.replace(OUT)          # atomic: never a partial read
+
+
+def set_badge(ws, state, session=None, host="local"):
+    """Count events since the workspace was last visited; the newest event
+    decides the colour. An event for the workspace you are already looking at
+    is dropped -- the badge exists to pull you somewhere you are not."""
+    with lock:
+        if ws == current_ws and state != "busy":
+            # You are already here, so there is nothing to summon you to -- but
+            # an event still ends any work that was in progress, and leaving the
+            # spinner running would be a lie.
+            if badges.pop(ws, None) is not None:
+                flush()
+            return
+        entry = badges.get(ws) or {"state": state, "count": 0, "since": time.time()}
+        entry.setdefault("since", time.time())   # when this streak began
+        entry["state"] = state
+        # "busy" says work is under way; it is not something to count or be
+        # summoned by, so it neither increments nor resets the tally.
+        if state != "busy":
+            entry["count"] = min(entry["count"] + 1, 999)
+        was = badges.get(ws, {}).get("state")
+        badges[ws] = entry
+        flush()
+    # outside the lock: a slow HTTP call must not block the event stream
+    # Nodes notify for themselves, so a remote event is already on your phone.
+    # Only agents running on this machine still need the controller to push.
+    if state == "ask" and was != "ask" and host == "local":
+        threading.Thread(target=push, args=(ws, session or ws, host), daemon=True).start()
+
+
+def clear_badge(ws):
+    """Entering a workspace answers its call for attention. Work still in
+    progress there is not a call for attention, so the spinner stays."""
+    global current_ws
+    with lock:
+        current_ws = ws
+        entry = badges.get(ws)
+        if entry is None:
+            return
+        if entry.get("state") == "busy":
+            if entry.get("count"):
+                entry["count"] = 0
+                flush()
+            return
+        del badges[ws]
+        flush()
+
+
+def tail_source(source):
+    """Follow one log, resuming from the last byte we processed.
+
+    `source` is a hostname, or "local". The offset is anchored the first time
+    a source is seen -- at the current end of the log, so historic events are
+    not replayed -- and advanced per line thereafter. A source that stays
+    silent still gets an anchor, so a later disconnect resumes correctly.
+    """
+    while True:
+        if source not in offsets:
+            save_offset(source, current_size(source))
+        pos = offsets[source]
+        remote = source != "local"
+        shell = f"exec tail -c +{pos + 1} -F {LOG}"
+        cmd = (["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30", source, shell]
+               if remote else ["sh", "-c", shell])
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=1, text=True)
+            for line in proc.stdout:
+                pos += len(line.encode())
+                save_offset(source, pos)
+                parts = line.split()
+                if len(parts) == 2 and parts[1] in ("ask", "busy", "done"):
+                    set_badge(workspace_of(parts[0]), parts[1],
+                              session=parts[0], host=source)
+        except Exception as e:
+            print(f"claude-badged: {source}: {e}", file=sys.stderr)
+        # If the log was truncated behind us, start over rather than stalling.
+        if current_size(source) < offsets.get(source, 0):
+            save_offset(source, 0)
+        time.sleep(5)
+
+
+def current_size(source):
+    """Byte length of the log, used to anchor the first offset."""
+    cmd = ["sh", "-c", f"wc -c < {LOG} 2>/dev/null || echo 0"]
+    if source != "local":
+        cmd = ["ssh", "-o", "BatchMode=yes", source, cmd[2]]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=20).stdout
+        return int(out.strip() or 0)
+    except Exception:
+        return 0
+
+
+def initial_workspace():
+    global current_ws
+    try:
+        out = subprocess.run(["hyprctl", "activeworkspace", "-j"],
+                             capture_output=True, text=True, timeout=5).stdout
+        current_ws = workspace_of(json.loads(out)["name"])
+    except Exception:
+        current_ws = None
+
+
+def watch_hyprland():
+    sig = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "/run/user/1000")
+    if not sig:
+        found = sorted(Path(f"{runtime}/hypr").glob("*"), key=lambda p: p.stat().st_mtime)
+        if not found:
+            print("claude-badged: no Hyprland instance", file=sys.stderr)
+            return
+        sig = found[-1].name
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(f"{runtime}/hypr/{sig}/.socket2.sock")
+    buf = b""
+    while True:
+        data = s.recv(4096)
+        if not data:
+            return
+        buf += data
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            line = line.decode(errors="replace")
+            if line.startswith("workspace>>"):
+                clear_badge(workspace_of(line.split(">>", 1)[1]))
+            elif line.startswith("workspacev2>>"):
+                clear_badge(workspace_of(line.split(">>", 1)[1].split(",", 1)[-1]))
+
+
+def load_badges():
+    """Pending attention should survive a restart of this daemon."""
+    try:
+        for line in OUT.read_text().splitlines():
+            key, _, rest = line.partition("=")
+            key = key.strip()
+            if not key:
+                continue
+            state = re.search(r'state\s*=\s*"([^"]*)"', rest)
+            count = re.search(r"count\s*=\s*(\d+)", rest)
+            since = re.search(r"since\s*=\s*(\d+)", rest)
+            if state and count:
+                badges[key] = {
+                    "state": state.group(1),
+                    "count": int(count.group(1)),
+                    "since": int(since.group(1)) if since else time.time(),
+                }
+    except FileNotFoundError:
+        pass
+
+
+def fleet_hosts():
+    """Nodes to follow. Given on the command line, or from the fleet file that
+    agentic-fleet maintains -- so the unit file carries no hostnames."""
+    if len(sys.argv) > 1:
+        return sys.argv[1:]
+    f = Path.home() / ".config/claude-badged/fleet"
+    return f.read_text().split() if f.exists() else []
+
+
+def reaper():
+    while True:
+        time.sleep(60)
+        with lock:
+            if expire_busy():
+                flush()
+
+
+def main():
+    load_offsets()
+    load_badges()
+    flush()
+    initial_workspace()
+    threading.Thread(target=reaper, daemon=True).start()
+    for source in ["local"] + fleet_hosts():
+        threading.Thread(target=tail_source, args=(source,), daemon=True).start()
+    watch_hyprland()
+
+
+if __name__ == "__main__":
+    main()

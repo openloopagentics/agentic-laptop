@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Check that the whole setup is actually working, not merely installed.
+
+Each check is one line of output and one bit of state. With --quiet it prints
+nothing unless something is wrong, which is what the timer wants; with --push
+a regression also reaches the phone.
+
+Exit code is the number of failures.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+REPO = Path.home() / "src/agentic-laptop"
+LIMITS = Path("/var/lib/claude-limits/limits.toml")
+BADGES = Path("/var/lib/claude-limits/badges.toml")
+OFFSETS = Path.home() / ".cache/claude-badged/offsets.json"
+FLEET = Path.home() / ".config/claude-badged/fleet"
+HOSTS = FLEET.read_text().split() if FLEET.exists() else []
+
+results = []
+
+
+def check(name, ok, detail=""):
+    results.append((name, bool(ok), detail))
+    return ok
+
+
+def run(cmd, timeout=15):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return subprocess.CompletedProcess(cmd, 1, "", "timeout")
+
+
+def user_unit(name):
+    r = run(["systemctl", "--user", "is-active", name])
+    return check(f"unit {name}", r.stdout.strip() == "active", r.stdout.strip())
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--quiet", action="store_true", help="print only on failure")
+    ap.add_argument("--push", action="store_true", help="notify the phone on failure")
+    args = ap.parse_args()
+
+    for unit in ("claude-badges.service", "claude-actions.service", "claude-limits.timer"):
+        user_unit(unit)
+
+    r = run(["systemctl", "is-active", "tiny-dfr"])
+    check("touch bar daemon", r.stdout.strip() == "active", r.stdout.strip())
+
+    r = run(["/usr/local/bin/dfr-switch", "status"])
+    check("touch bar on custom build", "selected:  custom" in r.stdout)
+
+    # Usage figures should be refreshed by the 5-minute timer.
+    if LIMITS.exists():
+        age = (time.time() - LIMITS.stat().st_mtime) / 60
+        check("limits fresh", age < 15, f"{age:.0f} min old")
+    else:
+        check("limits fresh", False, "file missing")
+
+    # The badge file must be readable by `nobody`, or the bar shows nothing.
+    for p in (LIMITS, BADGES):
+        if p.exists():
+            check(f"{p.name} world-readable", (p.stat().st_mode & 0o004) != 0,
+                  oct(p.stat().st_mode & 0o777))
+
+    # Every source the bridge follows needs an offset, or it is not connected.
+    try:
+        offsets = json.loads(OFFSETS.read_text())
+    except Exception:
+        offsets = {}
+    for src in ["local"] + HOSTS:
+        check(f"bridge following {src}", src in offsets, "no offset recorded")
+
+    for host in HOSTS:
+        # Tailscale SSH swallows remote exit codes, so assert on stdout.
+        r = run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host,
+                 "echo ALIVE"], 20)
+        if check(f"ssh {host}", "ALIVE" in r.stdout, r.stderr.strip()[:60]):
+            probe = ("grep -q agentic-badge ~/.claude/settings.json && echo HOOK; "
+                     "test -x ~/.agentic/bin/agentic-badge && echo BADGE; "
+                     "test -d ~/.tmux/plugins/tmux-continuum && echo TMUX; "
+                     "test -f ~/.agentic/config && echo NODE")
+            r = run(["ssh", "-o", "BatchMode=yes", host, probe], 30)
+            check(f"{host} is a node", "NODE" in r.stdout)
+            check(f"{host} claude hook", "HOOK" in r.stdout)
+            check(f"{host} badge script", "BADGE" in r.stdout)
+            check(f"{host} tmux persistence", "TMUX" in r.stdout)
+
+    # Config drift: what is running should be what is committed.
+    # Your configuration lives in local/, falling back to the shipped example.
+    def tracked(name):
+        for rel in (f"local/{name}", f"examples/{name}"):
+            if (REPO / rel).exists():
+                return REPO / rel
+        return None
+
+    for name, live in (("tiny-dfr.config.toml", "/etc/tiny-dfr/config.toml"),
+                       ("hyprland.lua", str(Path.home() / ".config/hypr/hyprland.lua"))):
+        src, dst = tracked(name), Path(live)
+        same = src and dst.exists() and src.read_bytes() == dst.read_bytes()
+        check(f"in sync: {name}", bool(same), "differs from the repo")
+
+    r = run(["git", "-C", str(REPO), "status", "--porcelain"])
+    check("repo committed", r.stdout.strip() == "", f"{len(r.stdout.splitlines())} uncommitted")
+
+    failed = [(n, d) for n, ok, d in results if not ok]
+    if not args.quiet or failed:
+        for name, ok, detail in results:
+            mark = "ok  " if ok else "FAIL"
+            print(f"  [{mark}] {name}" + (f"  ({detail})" if detail and not ok else ""))
+        print(f"\n  {len(results) - len(failed)}/{len(results)} checks passed")
+
+    if failed and args.push:
+        conf = Path.home() / ".config/claude-badged/push.conf"
+        try:
+            cfg = dict(
+                (k.strip(), v.strip())
+                for k, _, v in (l.split("#")[0].partition("=") for l in conf.read_text().splitlines())
+                if k.strip()
+            )
+            if cfg.get("topic"):
+                body = "\n".join(f"{n}: {d}" for n, d in failed[:5])
+                run(["curl", "-fsS", "-m", "10", "-H", "Title: agentic-laptop degraded",
+                     "-H", "Tags: warning", "-d", body, cfg["topic"]], 15)
+        except Exception:
+            pass
+
+    return len(failed)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

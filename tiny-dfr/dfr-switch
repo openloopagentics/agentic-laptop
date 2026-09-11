@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Switch the Touch Bar daemon between the stock package binary and our build.
+#
+# The stock package is never modified. A systemd drop-in overrides ExecStart:
+# present means custom, absent means stock. Switching to custom verifies the
+# config first and rolls back automatically if the daemon fails to stay up.
+set -euo pipefail
+
+DROPIN_DIR=/etc/systemd/system/tiny-dfr.service.d
+DROPIN="$DROPIN_DIR/10-custom.conf"
+CUSTOM=/usr/local/bin/tiny-dfr-custom
+REFERENCE=/usr/local/share/tiny-dfr/config.toml   # base config our build expects
+BASE=/usr/share/tiny-dfr/config.toml              # base config the package ships
+ETC=/etc/tiny-dfr/config.toml                     # the user's overrides
+SETTLE=5                                          # seconds the unit must stay up
+
+die()  { printf 'dfr-switch: %s\n' "$*" >&2; exit 1; }
+note() { printf '  %s\n' "$*"; }
+
+current() { [ -f "$DROPIN" ] && echo custom || echo stock; }
+
+running_binary() {
+    systemctl show tiny-dfr -p ExecStart --value 2>/dev/null |
+        grep -oE 'path=[^ ;]+' | head -1 | cut -d= -f2
+}
+
+# load_config() in the daemon unwraps keys it expects to find in the base
+# config. A build newer than the installed package can expect a key that
+# exists in neither /usr/share nor /etc -- which panics at startup. This is
+# exactly how the first parity run died, so check for it before switching.
+preflight() {
+    [ -x "$CUSTOM" ] || die "no custom binary at $CUSTOM"
+    [ -f "$REFERENCE" ] || { note "no reference config; skipping key check"; return 0; }
+    local missing=() key
+    while read -r key; do
+        [ -n "$key" ] || continue
+        grep -qE "^[[:space:]]*$key[[:space:]]*=" "$BASE" 2>/dev/null && continue
+        grep -qE "^[[:space:]]*$key[[:space:]]*=" "$ETC"  2>/dev/null && continue
+        missing+=("$key")
+    done < <(sed '/^\[/,$d' "$REFERENCE" | grep -oE '^[A-Za-z]+ =' | tr -d ' =' | sort -u)
+
+    if [ ${#missing[@]} -gt 0 ]; then
+        printf 'dfr-switch: config keys the custom build needs are missing:\n' >&2
+        printf '  %s\n' "${missing[@]}" >&2
+        printf 'Add them to %s, then retry.\n' "$ETC" >&2
+        exit 1
+    fi
+}
+
+settled() {
+    sleep "$SETTLE"
+    [ "$(systemctl is-active tiny-dfr)" = active ]
+}
+
+to_custom() {
+    preflight
+    install -d "$DROPIN_DIR"
+    cat > "$DROPIN" <<'DROPIN_EOF'
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/tiny-dfr-custom
+RuntimeDirectory=tiny-dfr
+DROPIN_EOF
+    systemctl daemon-reload
+    systemctl restart tiny-dfr
+
+    if settled; then
+        note "now running: custom ($(running_binary))"
+    else
+        printf 'dfr-switch: custom build did not stay up -- rolling back.\n' >&2
+        rm -f "$DROPIN"
+        systemctl daemon-reload
+        systemctl restart tiny-dfr
+        printf 'dfr-switch: back on stock. Last words:\n' >&2
+        journalctl -u tiny-dfr -n 15 --no-pager 2>/dev/null |
+            grep -viE 'libinput error|touchpad-jumping|Touch jump' >&2 || true
+        exit 1
+    fi
+}
+
+to_stock() {
+    rm -f "$DROPIN"
+    systemctl daemon-reload
+    systemctl restart tiny-dfr
+    note "now running: stock ($(running_binary))"
+}
+
+status() {
+    note "selected:  $(current)"
+    note "ExecStart: $(running_binary)"
+    note "unit:      $(systemctl is-active tiny-dfr)"
+    [ -x "$CUSTOM" ] && note "custom:    $CUSTOM ($(stat -c %y "$CUSTOM" | cut -d. -f1))" \
+                     || note "custom:    not installed"
+}
+
+case "${1:-status}" in
+    custom) to_custom ;;
+    stock)  to_stock ;;
+    status) status ;;
+    *) die "usage: dfr-switch [custom|stock|status]" ;;
+esac

@@ -1,0 +1,70 @@
+From c19fae2619488fe0419bab08bd5e734868d0f3ad Mon Sep 17 00:00:00 2001
+From: Ravikant Cherukuri <ravi@openloopagentics.com>
+Date: Thu, 10 Sep 2026 01:43:30 -0700
+Subject: [PATCH 11/18] Bars widget: enlarge the mark, set the tag as a corner
+ superscript
+
+Stacking a mark over a letter spent the column's height on two small things.
+Give the mark most of the button height and set the account tag small in its
+top-right corner, the way a count sits on an app icon: the provider is then
+readable at a glance and the account still distinguishes two of them.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0196XW9vTfjGeWDpHTAmYsws
+---
+ src/widget.rs | 38 ++++++++++++++++++++------------------
+ 1 file changed, 20 insertions(+), 18 deletions(-)
+
+diff --git a/src/widget.rs b/src/widget.rs
+index b31092d..44f5b2a 100644
+--- a/src/widget.rs
++++ b/src/widget.rs
+@@ -346,25 +346,27 @@ impl Widget {
+             // A logo replaces the first half of the tag: the provider is shown
+             // as a mark, the account stays a letter beneath it.
+             if let Some(logo) = &self.logo {
+-                let size = h * 0.44;
++                // The mark carries the provider and takes most of the height;
++                // the account is a small superscript in its top-right corner,
++                // the way a count sits on an app icon.
++                let size = h * 0.78;
+                 let letter = lines.last().copied().unwrap_or("");
+-                c.set_font_size(h * 0.38);
+-                let ext = c.text_extents(letter).unwrap();
+-                let col_w = size.max(ext.width());
+-                let gap = h * 0.06;
+-                let total = size + gap + ext.height();
+-                let top = bot + (h - total) / 2.0;
+-
+-                let _ = logo.render_document(
+-                    c,
+-                    &Rectangle::new(bars_x + (col_w - size) / 2.0, top, size, size),
+-                );
+-                c.set_source_rgb(color.r, color.g, color.b);
+-                c.move_to(bars_x + (col_w - ext.width()) / 2.0 - ext.x_bearing(),
+-                          top + size + gap + ext.height());
+-                c.show_text(letter).unwrap();
+-
+-                bars_x += col_w + 7.0;
++                let top = bot + (h - size) / 2.0;
++                let _ = logo.render_document(c, &Rectangle::new(bars_x, top, size, size));
++
++                if !letter.is_empty() {
++                    c.set_font_size(h * 0.30);
++                    let ext = c.text_extents(letter).unwrap();
++                    // sit just outside the mark's corner so it never overlaps
++                    // the glyph itself
++                    c.set_source_rgb(color.r, color.g, color.b);
++                    c.move_to(bars_x + size - ext.x_bearing() - ext.width() * 0.15,
++                              top + ext.height());
++                    c.show_text(letter).unwrap();
++                    bars_x += size + ext.width() * 0.9 + 5.0;
++                } else {
++                    bars_x += size + 5.0;
++                }
+                 lines.clear();
+             }
+ 
+-- 
+2.55.0
+

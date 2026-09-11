@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Jump to the workspace that has been waiting on you longest.
+
+A pending question outranks a finished command, and within each the oldest
+wins -- so repeatedly pressing the key walks the backlog in the order it
+formed rather than in alphabetical or workspace order.
+"""
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+BADGES = Path("/var/lib/claude-limits/badges.toml")
+PRIORITY = {"ask": 0, "done": 1}
+
+
+def read():
+    try:
+        text = BADGES.read_text()
+    except FileNotFoundError:
+        return []
+    out = []
+    for line in text.splitlines():
+        key, _, rest = line.partition("=")
+        key = key.strip()
+        state = re.search(r'state\s*=\s*"([^"]*)"', rest)
+        since = re.search(r"since\s*=\s*(\d+)", rest)
+        if key and state:
+            out.append((PRIORITY.get(state.group(1), 9),
+                        int(since.group(1)) if since else 0,
+                        key, state.group(1)))
+    return out
+
+
+def main():
+    pending = sorted(read())
+    if not pending:
+        # Nothing waiting: say so on the bar rather than moving the user.
+        subprocess.run(["hyprctl", "notify", "5", "1500", "0",
+                        "Nothing waiting"], capture_output=True)
+        return 1
+    _, _, ws, state = pending[0]
+    # Lua dispatch syntax: this Hyprland is configured in Lua, which rejects
+    # the legacy "dispatch workspace name:x" string form.
+    subprocess.run(["hyprctl", "dispatch",
+                    f'hl.dsp.focus({{workspace = "name:{ws}.1"}})'],
+                   capture_output=True)
+    print(f"{ws} ({state})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

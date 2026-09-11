@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""Collect Claude usage-limit utilisation across accounts.
+
+Claude Code caches the server's utilisation figures in <config>/.claude.json as
+`cachedUsageUtilization`, refreshed whenever the CLI talks to the API. That is
+the only local source for the 5-hour and weekly limits, so figures are as fresh
+as the last time that account ran -- which is why every account carries its own
+`fetched` timestamp.
+
+Accounts are read locally and over SSH from hosts given as arguments.
+"""
+import base64
+import json
+import shutil
+import subprocess
+import time
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+READER = r'''
+import json, glob, os, subprocess, sys, time
+
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+
+
+def live_usage(home):
+    """Ask the API for current utilisation.
+
+    Claude Code caches these figures in .claude.json but refreshes that cache
+    rarely -- it was two hours stale while the account was in active use -- so
+    the cache is only a fallback. Uses the OAuth token the CLI already stored;
+    any failure (expired token, no network) falls back to the cache.
+    """
+    try:
+        creds = json.load(open(os.path.join(home, ".claude/.credentials.json")))
+        tok = (creds.get("claudeAiOauth") or {}).get("accessToken")
+        if not tok:
+            return None
+        r = subprocess.run(
+            ["curl", "-sS", "-m", "15",
+             "-H", "Authorization: Bearer " + tok,
+             "-H", "anthropic-beta: oauth-2025-04-20", USAGE_URL],
+            capture_output=True, text=True, timeout=25)
+        d = json.loads(r.stdout)
+        return d if d.get("limits") else None
+    except Exception:
+        return None
+
+
+out = []
+paths = [os.path.expanduser("~/.claude.json")] + sorted(
+    glob.glob(os.path.expanduser("~/.claude-*/.claude.json")))
+for p in paths:
+    try:
+        d = json.load(open(p))
+    except Exception:
+        continue
+    u = d.get("cachedUsageUtilization")
+    if not u:
+        continue
+    home = os.path.dirname(os.path.dirname(p)) if ".claude-" in p else os.path.expanduser("~")
+    fresh = live_usage(home)
+    out.append({
+        "email": (d.get("oauthAccount") or {}).get("emailAddress"),
+        "tier": (d.get("oauthAccount") or {}).get("organizationRateLimitTier"),
+        "fetchedAtMs": int(time.time() * 1000) if fresh else u.get("fetchedAtMs"),
+        "live": bool(fresh),
+        "limits": (fresh or {}).get("limits") or u.get("utilization", {}).get("limits", []),
+        # Only the live response carries these; the .claude.json cache does not.
+        "breakdown": (fresh or {}).get("seven_day_breakdown"),
+        "spend": (fresh or {}).get("spend"),
+        "config": p,
+    })
+print(json.dumps(out))
+'''
+
+
+def read_local():
+    return json.loads(subprocess.run(
+        [sys.executable, "-c", READER], capture_output=True, text=True, check=True).stdout)
+
+
+def read_remote(host):
+    # base64 rather than quoting: the reader is multi-line, and a remote shell
+    # would not preserve newlines through an escaped string.
+    payload = base64.b64encode(READER.encode()).decode()
+    r = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host,
+         f"echo {payload} | base64 -d | python3 -"],
+        capture_output=True, text=True, timeout=30)
+    # Tailscale SSH does not forward remote exit codes; judge by the payload.
+    try:
+        return json.loads((r.stdout or "").strip() or "[]")
+    except ValueError:
+        msg = (r.stderr or r.stdout or "").strip()[:120]
+        print(f"climits: {host}: {msg}", file=sys.stderr)
+        return []
+
+
+def read_codex():
+    """Codex persists no rate-limit state, but its app-server answers
+    account/rateLimits/read over JSON-RPC on stdio. Windows are identified by
+    duration: 300 minutes is the 5-hour window, 10080 the weekly one."""
+    if not shutil.which("codex"):
+        return []
+    try:
+        proc = subprocess.Popen(
+            ["codex", "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, bufsize=1)
+    except OSError:
+        return []
+    try:
+        for msg in (
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"clientInfo": {"name": "climits", "title": "climits", "version": "0.1"}}},
+            {"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read", "params": {}},
+        ):
+            proc.stdin.write(json.dumps(msg) + "\n")
+            proc.stdin.flush()
+
+        result = None
+        deadline = time.time() + 25
+        while time.time() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            try:
+                m = json.loads(line)
+            except ValueError:
+                continue
+            if m.get("id") == 2:
+                result = m.get("result")
+                break
+    finally:
+        proc.kill()
+
+    if not result:
+        return []
+
+    def iso(epoch):
+        return datetime.fromtimestamp(epoch, timezone.utc).isoformat() if epoch else None
+
+    rings = {k: {"percent": 0, "resets_at": None, "model": None}
+             for k in ("session", "weekly_all", "weekly_scoped")}
+
+    def take(kind, w, name):
+        pct = w.get("usedPercent") or 0
+        r = rings[kind]
+        # The fullest window wins the ring, and brings its own reset time.
+        if pct > r["percent"] or r["resets_at"] is None:
+            r.update(percent=pct, resets_at=iso(w.get("resetsAt")) or r["resets_at"],
+                     model=name)
+
+    for lid, v in (result.get("rateLimitsByLimitId") or {}).items():
+        name = None if lid == "codex" else (v.get("limitName") or lid)
+        for slot in ("primary", "secondary"):
+            w = v.get(slot)
+            if not w:
+                continue
+            mins = w.get("windowDurationMins")
+            if mins == 300:
+                take("session", w, name)
+            elif mins == 10080:
+                take("weekly_all" if lid == "codex" else "weekly_scoped", w, name)
+
+    rc = result.get("rateLimitResetCredits") or {}
+    reset_credits = {
+        "available": rc.get("availableCount", 0),
+        # Ids dropped: this file is world-readable and nothing here needs them.
+        "credits": [
+            {"title": c.get("title"), "status": c.get("status"),
+             "granted_at": iso(c.get("grantedAt")), "expires_at": iso(c.get("expiresAt"))}
+            for c in rc.get("credits") or []
+        ],
+    } if rc else None
+
+    plan = (result.get("rateLimits") or {}).get("planType")
+    return [{
+        "host": "local",
+        "email": "codex",
+        "tier": plan,
+        "fetchedAtMs": int(time.time() * 1000),   # live, not cached
+        "live": True,
+        "rings": rings,
+        "reset_credits": reset_credits,
+    }]
+
+
+def normalise(acct, host):
+    """Flatten the limits list into the three rings we care about."""
+    rings = {}
+    for l in acct.get("limits", []):
+        kind = l.get("kind")
+        scope = (l.get("scope") or {}).get("model") or {}
+        rings[kind] = {
+            "percent": l.get("percent"),
+            "resets_at": l.get("resets_at"),
+            "severity": l.get("severity"),
+            "model": scope.get("display_name") or scope.get("id"),
+        }
+    return {
+        "host": host,
+        "live": acct.get("live", False),
+        "email": acct.get("email"),
+        "tier": acct.get("tier"),
+        "fetchedAtMs": acct.get("fetchedAtMs"),
+        "rings": rings,
+        "breakdown": acct.get("breakdown"),
+        "spend": acct.get("spend"),
+    }
+
+
+def expired(iso):
+    """A window whose reset time has passed reads 0, not its stale figure."""
+    if not iso:
+        return False
+    try:
+        return datetime.fromisoformat(iso) <= datetime.now(timezone.utc)
+    except ValueError:
+        return False
+
+
+def as_toml(accounts):
+    """Hand-off format for tiny-dfr, which runs as `nobody` and cannot read
+    a user's home directory. TOML because the daemon already links toml."""
+    out = []
+    for a in accounts:
+        r = a["rings"]
+        def pct(kind):
+            d = r.get(kind) or {}
+            if d.get("percent") is None or expired(d.get("resets_at")):
+                return 0
+            return d["percent"]
+        out.append(
+            "[[account]]\n"
+            f'email = "{a["email"]}"\n'
+            f'host = "{a["host"]}"\n'
+            f"live = {str(bool(a.get('live'))).lower()}\n"
+            f"age_min = {int((time.time()*1000 - (a.get('fetchedAtMs') or 0))/60000)}\n"
+            f"session = {pct('session')}\n"
+            f"weekly_all = {pct('weekly_all')}\n"
+            f"weekly_scoped = {pct('weekly_scoped')}\n"
+        )
+    return "\n".join(out)
+
+
+def main():
+    args = sys.argv[1:]
+    toml_out = json_out = None
+    if "--toml" in args:
+        i = args.index("--toml")
+        toml_out = Path(args[i + 1])
+        args = args[:i] + args[i + 2:]
+    if "--json" in args:
+        i = args.index("--json")
+        json_out = Path(args[i + 1])
+        args = args[:i] + args[i + 2:]
+
+    # Hosts on the command line, or every node in the fleet file that
+    # agentic-fleet maintains -- so the unit file carries no hostnames.
+    if not args:
+        fleet = Path.home() / ".config/claude-badged/fleet"
+        args = fleet.read_text().split() if fleet.exists() else []
+
+    accounts = [normalise(a, "local") for a in read_local()]
+    for h in args:
+        accounts += [normalise(a, h) for a in read_remote(h)]
+    accounts += read_codex()
+
+    # Everything the rings throw away -- reset times, severity, model scope,
+    # plan tier -- kept for the detail overlay. The daemon never parses this.
+    if json_out:
+        tmp = json_out.with_suffix(".tmp")
+        tmp.write_text(json.dumps({
+            "updated": int(time.time()),
+            "accounts": accounts,
+        }))
+        tmp.chmod(0o644)
+        tmp.replace(json_out)
+        if not toml_out:
+            print(json_out)
+
+    if toml_out:
+        tmp = toml_out.with_suffix(".tmp")
+        tmp.write_text(as_toml(accounts))
+        tmp.chmod(0o644)          # the daemon reads this as `nobody`
+        tmp.replace(toml_out)     # atomic, so a partial read is impossible
+        print(toml_out)
+        return
+
+    if json_out:
+        return
+
+    json.dump(accounts, sys.stdout, indent=2)
+    print()
+
+
+if __name__ == "__main__":
+    main()

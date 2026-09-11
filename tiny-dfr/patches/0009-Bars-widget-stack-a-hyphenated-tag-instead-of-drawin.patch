@@ -1,0 +1,68 @@
+From 3fa7e50fbd42fb3ed8ce99c0cd970fd104d02c69 Mon Sep 17 00:00:00 2001
+From: Ravikant Cherukuri <ravi@openloopagentics.com>
+Date: Thu, 10 Sep 2026 01:33:29 -0700
+Subject: [PATCH 09/18] Bars widget: stack a hyphenated tag instead of drawing
+ the hyphen
+
+A three-character tag competes with the bars for a 42px-wide slot. Split the
+tag on a hyphen and draw the halves one above the other, centred on the
+button's midpoint, which fits two larger characters in the space three small
+ones occupied.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0196XW9vTfjGeWDpHTAmYsws
+---
+ src/widget.rs | 34 ++++++++++++++++++++++++++++------
+ 1 file changed, 28 insertions(+), 6 deletions(-)
+
+diff --git a/src/widget.rs b/src/widget.rs
+index 3e76e90..3e78182 100644
+--- a/src/widget.rs
++++ b/src/widget.rs
+@@ -313,15 +313,37 @@ impl Widget {
+         let bar_h = (h / 5.0).max(4.0);
+         let gap = (h - bar_h * 3.0) / 4.0;
+ 
+-        // Optional short tag at the left, so two accounts are distinguishable.
++        // Optional short tag at the left, so accounts are distinguishable. A
++        // hyphen stacks the halves rather than being drawn: two characters one
++        // above the other read better than three in a 42px-tall button.
+         let mut bars_x = left_edge + pad_x;
+         if let Some(label) = &self.label {
+-            c.set_font_size(h * 0.34);
+-            let ext = c.text_extents(label).unwrap();
++            let lines: Vec<&str> = label.split('-').filter(|s| !s.is_empty()).collect();
+             c.set_source_rgb(color.r, color.g, color.b);
+-            c.move_to(bars_x, bot + h / 2.0 + ext.height() / 2.0);
+-            c.show_text(label).unwrap();
+-            bars_x += ext.width() + 6.0;
++            if lines.len() > 1 {
++                let size = h * 0.40;
++                c.set_font_size(size);
++                let widest = lines
++                    .iter()
++                    .map(|l| c.text_extents(l).unwrap().width())
++                    .fold(0.0_f64, f64::max);
++                let leading = size * 0.92;
++                // centre the stack on the button's vertical midpoint
++                let first_baseline = bot + h / 2.0 - leading / 2.0 + size * 0.36;
++                for (i, line) in lines.iter().enumerate() {
++                    let ext = c.text_extents(line).unwrap();
++                    c.move_to(bars_x + (widest - ext.width()) / 2.0,
++                              first_baseline + i as f64 * leading);
++                    c.show_text(line).unwrap();
++                }
++                bars_x += widest + 7.0;
++            } else {
++                c.set_font_size(h * 0.34);
++                let ext = c.text_extents(label).unwrap();
++                c.move_to(bars_x, bot + h / 2.0 + ext.height() / 2.0);
++                c.show_text(label).unwrap();
++                bars_x += ext.width() + 6.0;
++            }
+         }
+         let label_w = bars_x - (left_edge + pad_x);
+ 
+-- 
+2.55.0
+

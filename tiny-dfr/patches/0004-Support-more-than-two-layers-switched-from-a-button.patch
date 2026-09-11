@@ -1,0 +1,253 @@
+From b9259f3cf99b872417b366d2e8c8217b0edab5c5 Mon Sep 17 00:00:00 2001
+From: Ravi <ravi@openloopagentics.com>
+Date: Wed, 9 Sep 2026 23:29:20 -0700
+Subject: [PATCH 04/18] Support more than two layers, switched from a button
+
+The daemon had exactly two layers, both bound to the Fn key: held Fn showed
+layer 1, releasing returned to layer 0. There was no way to reach a third set
+of buttons at all.
+
+Make `layers` a Vec and add an [ExtraLayers] table of named layers, plus a
+`Layer` key on a button that switches to one by name ("primary", "media", or
+any extra) instead of sending keys:
+
+  [ExtraLayers]
+  fkeys = [ { Text = "F1", Action = "F1" }, ...,
+            { Text = "back", Layer = "primary" } ]
+
+Indices 0 and 1 keep the existing Fn behaviour, so Fn remains a guaranteed way
+out of an extra layer even if its own back button is misconfigured. Extra
+layers are sorted by name for stable indices across config reloads, and the
+switch happens on touch-down while the touch stays bound to the layer it
+started on, so the matching up-event still releases the right button.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0196XW9vTfjGeWDpHTAmYsws
+---
+ src/config.rs | 57 +++++++++++++++++++++++++++++++++++++++------------
+ src/main.rs   | 20 ++++++++++++++++++
+ 2 files changed, 64 insertions(+), 13 deletions(-)
+
+diff --git a/src/config.rs b/src/config.rs
+index 04be13b..6d5f881 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -86,6 +86,7 @@ struct ConfigProxy {
+     active_brightness: Option<u32>,
+     double_press_switch_layers: Option<u32>,
+     palette: Option<HashMap<String, String>>,
++    extra_layers: Option<HashMap<String, Vec<ButtonConfig>>>,
+     primary_layer_keys: Option<Vec<ButtonConfig>>,
+     media_layer_keys: Option<Vec<ButtonConfig>>,
+ }
+@@ -117,7 +118,7 @@ where
+     deserializer.deserialize_any(ArrayOrSingle)
+ }
+ 
+-#[derive(Deserialize, Default)]
++#[derive(Deserialize, Default, Clone)]
+ #[serde(rename_all = "PascalCase")]
+ pub struct ButtonConfig {
+     #[serde(alias = "Svg")]
+@@ -141,6 +142,12 @@ pub struct ButtonConfig {
+     pub fill: Option<bool>,
+     pub path: Option<String>,
+     pub account: Option<String>,
++    /// Name of a layer in [ExtraLayers], or "primary"/"media". Pressing the
++    /// button switches to it instead of sending keys.
++    pub layer: Option<String>,
++    /// Resolved from `layer` once layer indices are known; never deserialised.
++    #[serde(skip)]
++    pub switch_to: Option<usize>,
+     /// Filled in by load_config once the palette is known; never deserialised.
+     #[serde(skip)]
+     pub colors: ButtonColors,
+@@ -161,7 +168,7 @@ fn load_font(name: &str) -> FontFace {
+     FontFace::create_from_ft(&face).unwrap()
+ }
+ 
+-fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
++fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
+     let mut base =
+         toml::from_str::<ConfigProxy>(&read_to_string("/usr/share/tiny-dfr/config.toml").unwrap())
+             .unwrap();
+@@ -179,6 +186,7 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
+         base.active_brightness = user.active_brightness.or(base.active_brightness);
+         base.double_press_switch_layers = user.double_press_switch_layers.or(base.double_press_switch_layers);
+         base.palette = user.palette.or(base.palette);
++        base.extra_layers = user.extra_layers.or(base.extra_layers);
+     };
+     let palette: HashMap<String, Rgb> = base
+         .palette
+@@ -208,23 +216,46 @@ fn load_config(width: u16) -> (Config, [FunctionLayer; 2]) {
+             );
+         }
+     }
+-    for layer in [&mut media_layer_keys, &mut primary_layer_keys] {
++    // Layer 0 and 1 keep the Fn semantics (held Fn shows layer 1). Any extra
++    // named layers follow, reachable only from a button carrying a Layer key.
++    let extras = base.extra_layers.take().unwrap_or_default();
++    let mut extra_names: Vec<String> = extras.keys().cloned().collect();
++    extra_names.sort(); // stable indices across reloads
++
++    let media_first = base.media_layer_default.unwrap();
++    let mut index_of: HashMap<String, usize> = HashMap::new();
++    index_of.insert("primary".into(), if media_first { 1 } else { 0 });
++    index_of.insert("media".into(), if media_first { 0 } else { 1 });
++    for (i, name) in extra_names.iter().enumerate() {
++        index_of.insert(name.clone(), 2 + i);
++    }
++
++    let mut all: Vec<Vec<ButtonConfig>> = if media_first {
++        vec![media_layer_keys, primary_layer_keys]
++    } else {
++        vec![primary_layer_keys, media_layer_keys]
++    };
++    for name in &extra_names {
++        all.push(extras.get(name).cloned().unwrap_or_default());
++    }
++
++    for layer in all.iter_mut() {
+         for button in layer.iter_mut() {
+             button.colors = ButtonColors {
+                 fg: resolve_color(&button.color, &palette),
+                 bg: resolve_color(&button.background, &palette),
+                 active_bg: resolve_color(&button.active_background, &palette),
+             };
++            if let Some(name) = &button.layer {
++                match index_of.get(name) {
++                    Some(i) => button.switch_to = Some(*i),
++                    None => eprintln!("tiny-dfr: unknown Layer {name:?}"),
++                }
++            }
+         }
+     }
+ 
+-    let media_layer = FunctionLayer::with_config(media_layer_keys);
+-    let fkey_layer = FunctionLayer::with_config(primary_layer_keys);
+-    let layers = if base.media_layer_default.unwrap() {
+-        [media_layer, fkey_layer]
+-    } else {
+-        [fkey_layer, media_layer]
+-    };
++    let layers: Vec<FunctionLayer> = all.into_iter().map(FunctionLayer::with_config).collect();
+     let cfg = Config {
+         show_button_outlines: base.show_button_outlines.unwrap(),
+         enable_pixel_shift: base.enable_pixel_shift.unwrap(),
+@@ -259,13 +290,13 @@ impl ConfigManager {
+             watch_desc,
+         }
+     }
+-    pub fn load_config(&self, width: u16) -> (Config, [FunctionLayer; 2]) {
++    pub fn load_config(&self, width: u16) -> (Config, Vec<FunctionLayer>) {
+         load_config(width)
+     }
+     pub fn update_config(
+         &mut self,
+         cfg: &mut Config,
+-        layers: &mut [FunctionLayer; 2],
++        layers: &mut Vec<FunctionLayer>,
+         width: u16,
+     ) -> bool {
+         if self.watch_desc.is_none() {
+@@ -278,7 +309,7 @@ impl ConfigManager {
+         }
+     }
+     #[cold]
+-    fn handle_events(&mut self, cfg: &mut Config, layers: &mut [FunctionLayer; 2], width: u16, evts: Result<Vec<InotifyEvent>, Errno>) -> bool {
++    fn handle_events(&mut self, cfg: &mut Config, layers: &mut Vec<FunctionLayer>, width: u16, evts: Result<Vec<InotifyEvent>, Errno>) -> bool {
+         let mut ret = false;
+         for evt in evts.unwrap() {
+             if Some(evt.wd) != self.watch_desc {
+diff --git a/src/main.rs b/src/main.rs
+index 3fabbdd..1389b29 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -111,6 +111,9 @@ struct Button {
+     icon_height: f64,
+     /// None everywhere means "draw exactly as stock did".
+     colors: ButtonColors,
++    /// Some(i) means pressing this button switches to layer i instead of
++    /// (or as well as) sending its keys.
++    switch_to: Option<usize>,
+ }
+ 
+ fn try_load_svg(path: &str) -> Result<ButtonImage> {
+@@ -261,8 +264,10 @@ fn get_battery_state(battery: &str) -> (u32, BatteryState) {
+ impl Button {
+     fn with_config(cfg: ButtonConfig) -> Button {
+         let colors = cfg.colors;
++        let switch_to = cfg.switch_to;
+         let mut button = Button::image_from_config(cfg);
+         button.colors = colors;
++        button.switch_to = switch_to;
+         button
+     }
+     fn image_from_config(cfg: ButtonConfig) -> Button {
+@@ -322,6 +327,7 @@ impl Button {
+             icon_width: 0.0,
+             icon_height: 0.0,
+             colors: ButtonColors::default(),
++            switch_to: None,
+         }
+     }
+     fn new_spacer() -> Button {
+@@ -333,6 +339,7 @@ impl Button {
+             icon_width: 0.0,
+             icon_height: 0.0,
+             colors: ButtonColors::default(),
++            switch_to: None,
+         }
+     }
+     fn new_text(text: String, action: Vec<Key>) -> Button {
+@@ -344,6 +351,7 @@ impl Button {
+             icon_width: 0.0,
+             icon_height: 0.0,
+             colors: ButtonColors::default(),
++            switch_to: None,
+         }
+     }
+     fn new_icon(
+@@ -363,6 +371,7 @@ impl Button {
+             active: false,
+             changed: false,
+             colors: ButtonColors::default(),
++            switch_to: None,
+         }
+     }
+     fn load_battery_image(icon: &str, theme: Option<impl AsRef<str>>) -> Handle {
+@@ -417,6 +426,7 @@ impl Button {
+             icon_width: 0.0,
+             icon_height: 0.0,
+             colors: ButtonColors::default(),
++            switch_to: None,
+         }
+     }
+ 
+@@ -445,6 +455,7 @@ impl Button {
+             icon_width: 0.0,
+             icon_height: 0.0,
+             colors: ButtonColors::default(),
++            switch_to: None,
+         }
+     }
+     fn needs_faster_refresh(&self) -> bool {
+@@ -1118,6 +1129,15 @@ fn real_main(drm: &mut DrmBackend) {
+                                 layers[active_layer].buttons[btn]
+                                     .1
+                                     .set_active(&mut uinput, true);
++                                // A layer button switches immediately. The touch
++                                // stays bound to the layer it started on, so the
++                                // matching Up still releases the right button.
++                                if let Some(target) = layers[active_layer].buttons[btn].1.switch_to {
++                                    if target < layers.len() && target != active_layer {
++                                        active_layer = target;
++                                        needs_complete_redraw = true;
++                                    }
++                                }
+                             }
+                         }
+                         TouchEvent::Motion(mtn) => {
+-- 
+2.55.0
+

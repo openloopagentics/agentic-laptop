@@ -1,0 +1,49 @@
+From c071eb9a4973069e3c0801cbd12976db35d793ab Mon Sep 17 00:00:00 2001
+From: Ravikant Cherukuri <ravi@openloopagentics.com>
+Date: Thu, 10 Sep 2026 01:54:01 -0700
+Subject: [PATCH 16/18] Badge: inset from the right, and centre the numeral on
+ its ink box
+
+At 3px the pill sat on the button's 8px corner radius, matching the spinner's
+old inset. And the numeral was placed from the baseline, which happens to look
+right for digits and drifts for anything else; centre the ink box instead.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0196XW9vTfjGeWDpHTAmYsws
+---
+ src/main.rs | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/src/main.rs b/src/main.rs
+index 32cc80f..17ad098 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -882,7 +882,8 @@ impl FunctionLayer {
+                     let ext = c.text_extents(&label).unwrap();
+                     let pill_w = (ext.width() + rad * 1.1).max(rad * 2.0);
+                     let cy = bot + pixel_shift_y + rad + 1.0;
+-                    let right = left_edge + button_width - 3.0;
++                    // match the spinner's inset; the corner radius is 8
++                    let right = left_edge + button_width - 7.0;
+                     let left = right - pill_w;
+ 
+                     c.set_source_rgb(r, g, b);
+@@ -892,11 +893,13 @@ impl FunctionLayer {
+                     c.close_path();
+                     c.fill().unwrap();
+ 
+-                    // dark numeral: both badge colours are light
++                    // dark numeral: both badge colours are light. Centre on the
++                    // ink box rather than the baseline, so the glyph sits in the
++                    // middle of the pill whatever its shape.
+                     c.set_source_rgb(0.12, 0.12, 0.18);
+                     c.move_to(
+                         (left + right) / 2.0 - ext.width() / 2.0 - ext.x_bearing(),
+-                        cy + ext.height() / 2.0,
++                        cy - ext.y_bearing() - ext.height() / 2.0,
+                     );
+                     c.show_text(&label).unwrap();
+                     c.restore().unwrap();
+-- 
+2.55.0
+

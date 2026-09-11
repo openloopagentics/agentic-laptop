@@ -1,0 +1,7 @@
+*.pre-agentic
+__pycache__/
+
+# local secrets
+config/push.conf
+# your machine's actual configuration; examples/ holds the shareable versions
+local/

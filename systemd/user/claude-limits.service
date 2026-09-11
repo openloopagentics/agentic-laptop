@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh Claude usage limits for the Touch Bar
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Absolute paths and an explicit PATH: a user unit gets a minimal environment,
+# and climits shells out to ssh.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/climits --toml /var/lib/claude-limits/limits.toml --json /var/lib/claude-limits/limits-detail.json
+# The remote read can hang on a sleeping host; never let it pile up.
+TimeoutStartSec=45

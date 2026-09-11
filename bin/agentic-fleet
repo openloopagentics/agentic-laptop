@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""Manage a fleet of agent nodes over the tailnet.
+
+    agentic-fleet list                 what is out there, and what is configured
+    agentic-fleet install <host>...    make those hosts into nodes
+    agentic-fleet install --all        every reachable non-controller host
+    agentic-fleet status               health of every configured node
+    agentic-fleet exec <host> <cmd>    run something everywhere, for once-offs
+
+Nodes are self-sufficient: they notify and answer prompts themselves, so the
+controller can be closed without anyone losing a notification.
+"""
+import argparse
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+def _repo():
+    """Find the repo whether this script is run from it, symlinked, or copied."""
+    here = Path(__file__).resolve().parent.parent
+    for cand in (here, Path.home() / "src/agentic-laptop"):
+        if (cand / "node" / "install.sh").exists():
+            return cand
+    sys.exit("cannot locate the agentic-laptop repo (need node/install.sh)")
+
+
+REPO = _repo()
+NODE_DIR = REPO / "node"
+CONF = Path.home() / ".config/claude-badged/push.conf"
+FLEET = Path.home() / ".config/claude-badged/fleet"
+
+
+def controller_conf():
+    cfg = {}
+    if CONF.exists():
+        for line in CONF.read_text().splitlines():
+            line = line.split("#", 1)[0].strip()
+            if "=" in line:
+                k, _, v = line.partition("=")
+                cfg[k.strip()] = v.strip()
+    return cfg
+
+
+def tailnet():
+    """Peers on the tailnet, newest status straight from tailscale."""
+    try:
+        raw = subprocess.run(["tailscale", "status", "--json"],
+                             capture_output=True, text=True, timeout=20).stdout
+        data = json.loads(raw)
+    except Exception as e:
+        sys.exit(f"cannot read tailscale status: {e}")
+    self_name = (data.get("Self") or {}).get("HostName", "")
+    peers = []
+    for p in (data.get("Peer") or {}).values():
+        # MagicDNS short name, not HostName: ssh resolves the former, and a
+        # a Mac's HostName is often its owner's name, not its DNS name.
+        dns = (p.get("DNSName") or "").split(".")[0]
+        peers.append({
+            "host": dns or p.get("HostName"),
+            "label": p.get("HostName"),
+            "os": p.get("OS"),
+            "ip": (p.get("TailscaleIPs") or [""])[0],
+            "online": bool(p.get("Online")),
+        })
+    return self_name, sorted(peers, key=lambda p: p["host"] or "")
+
+
+# A node is reached over the tailnet, where Tailscale has already
+# authenticated and authorised the peer before ssh sees it. accept-new is
+# therefore trust-on-first-use on top of an already-authenticated channel,
+# which is what makes `install --all` possible without pre-seeding keys by
+# hand. A changed key still fails loudly.
+SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+            "-o", "StrictHostKeyChecking=accept-new"]
+
+
+def ssh(host, cmd, timeout=60, stdin=None):
+    return subprocess.run(
+        ["ssh", *SSH_OPTS, host, cmd],
+        capture_output=True, text=True, timeout=timeout, input=stdin)
+
+
+BENIGN = ("Permanently added", "Warning: Permanently")
+
+
+def why(r):
+    """The useful line from ssh's noise: skip the host-key warning."""
+    for line in ((r.stderr or "") + "\n" + (r.stdout or "")).splitlines():
+        line = line.strip()
+        if line and not any(b in line for b in BENIGN):
+            return line[:110]
+    return "no output"
+
+
+def fleet_targets():
+    """Remembered ssh targets, keyed by bare hostname.
+
+    A node may need a username ("admin@mini2") because the local account
+    differs from machine to machine; the tailnet only knows the bare name.
+    """
+    out = {}
+    if FLEET.exists():
+        for entry in FLEET.read_text().split():
+            out[entry.rpartition("@")[2]] = entry
+    return out
+
+
+def is_node(host):
+    # Tailscale SSH does not propagate remote exit codes, so every check here
+    # asserts on stdout rather than on returncode.
+    r = ssh(host, "test -f ~/.agentic/config && echo AGENTIC-NODE", 25)
+    return "AGENTIC-NODE" in r.stdout
+
+
+def suitable(p, self_name):
+    """A node runs agents; phones, tablets and the controller do not."""
+    return (p["host"] != self_name.lower()
+            and (p["os"] or "").lower() in ("macos", "linux")
+            and p["online"])
+
+
+def cmd_list(args):
+    self_name, peers = tailnet()
+    targets = fleet_targets()
+    print(f"\n  controller: {self_name}\n")
+    print(f"  {'host':<20} {'os':<7} {'ip':<16} {'state':<10} machine")
+    for p in peers:
+        if not suitable(p, self_name) and not args.all:
+            continue
+        target = targets.get(p["host"], p["host"])
+        state = "node" if p["online"] and is_node(target) else (
+            "eligible" if p["online"] else "offline")
+        shown = target if target != p["host"] else p["host"]
+        print(f"  {shown[:20]:<20} {(p['os'] or '?')[:7]:<7} "
+              f"{p['ip']:<16} {state:<10} {p.get('label') or ''}")
+    print()
+
+
+def push_node(host, cfg):
+    """Copy the node package and run its installer, carrying the shared secrets."""
+    print(f"  {host}: copying node package")
+    r = ssh(host, "mkdir -p ~/.agentic/bin && echo READY")
+    if "READY" not in r.stdout:
+        return f"{host}: {why(r)}"
+    for f in sorted((NODE_DIR / "bin").iterdir()):
+        out = subprocess.run(
+            ["ssh", *SSH_OPTS, host,
+             f"cat > ~/.agentic/bin/{f.name} && chmod +x ~/.agentic/bin/{f.name}"],
+            input=f.read_bytes(), capture_output=True, timeout=60)
+        if out.returncode != 0:
+            return f"copy of {f.name} failed"
+        # cannot trust the exit code; verify the file landed
+        if "OK" not in ssh(host, f"test -s ~/.agentic/bin/{f.name} && echo OK", 25).stdout:
+            return f"{f.name} did not arrive"
+    env = (f'NTFY_TOPIC={cfg.get("topic","")} '
+           f'ACTION_TOKEN={cfg.get("action_token","")} '
+           f'ACTION_PORT={cfg.get("action_port","8787")}')
+    r = subprocess.run(
+        ["ssh", *SSH_OPTS, host, f"{env} bash -s"],
+        input=(NODE_DIR / "install.sh").read_text(),
+        capture_output=True, text=True, timeout=300)
+    print("\n".join("    " + l for l in r.stdout.strip().splitlines() if l.strip()))
+    if "node ready:" not in r.stdout:
+        tail = (r.stderr or "").strip().splitlines()
+        return tail[-1][:100] if tail else "installer did not report success"
+    return None
+
+
+def remember(hosts):
+    known = set(FLEET.read_text().split()) if FLEET.exists() else set()
+    known |= set(hosts)
+    FLEET.parent.mkdir(parents=True, exist_ok=True)
+    FLEET.write_text("\n".join(sorted(known)) + "\n")
+
+
+def cmd_install(args):
+    cfg = controller_conf()
+    if not cfg.get("topic"):
+        sys.exit("no ntfy topic configured on the controller; see config/push.conf.example")
+    targets = fleet_targets()
+    if args.all:
+        self_name, peers = tailnet()
+        # Prefer the remembered ssh target: a known node may need a username
+        # that the tailnet does not know about.
+        hosts = [targets.get(p["host"], p["host"])
+                 for p in peers if suitable(p, self_name)]
+    else:
+        hosts = [targets.get(h, h) for h in args.hosts]
+    if not hosts:
+        sys.exit("no hosts given")
+    done, failed = [], []
+    for host in hosts:
+        err = push_node(host, cfg)
+        (failed if err else done).append((host, err))
+        if err:
+            print(f"    FAILED: {err}")
+    remember([h for h, e in done])
+    print(f"\n  configured {len(done)}, failed {len(failed)}\n")
+    return 1 if failed else 0
+
+
+def cmd_status(args):
+    hosts = FLEET.read_text().split() if FLEET.exists() else []
+    if not hosts:
+        sys.exit("no nodes yet -- run: agentic-fleet install --all")
+    print()
+    for host in hosts:
+        # A tokenless request is answered 403 by a healthy endpoint, so the
+        # HTTP status is the liveness signal, not curl's exit code.
+        r = ssh(host, "test -f ~/.agentic/config || { echo NOT-A-NODE; exit; }; "
+                      ". ~/.agentic/config; "
+                      "code=$(curl -s -o /dev/null -m 3 -w '%{http_code}' "
+                      "\"http://$ACTION_BIND:${ACTION_PORT:-8787}/act\"); "
+                      "echo \"STATUS $code $(tmux ls 2>/dev/null | wc -l | tr -d ' ')\"", 40)
+        if "NOT-A-NODE" in r.stdout:
+            print(f"  {host:<20} not configured")
+            continue
+        line = next((l for l in r.stdout.splitlines() if l.startswith("STATUS")), "")
+        if not line:
+            print(f"  {host:<20} unreachable")
+            continue
+        _, code, sessions = (line.split() + ["?", "?"])[:3]
+        up = code == "403"
+        print(f"  {host:<20} {'endpoint ok' if up else f'endpoint {code}':<14} {sessions} tmux sessions")
+    print()
+
+
+def cmd_exec(args):
+    hosts = FLEET.read_text().split() if FLEET.exists() else []
+    for host in hosts:
+        r = ssh(host, args.command, 120)
+        print(f"\n  == {host} ==")
+        print("\n".join("  " + l for l in (r.stdout or r.stderr).strip().splitlines()[:20]))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("list"); p.add_argument("--all", action="store_true",
+                                               help="include offline and ineligible peers")
+    p.set_defaults(fn=cmd_list)
+    p = sub.add_parser("install"); p.add_argument("hosts", nargs="*")
+    p.add_argument("--all", action="store_true", help="every eligible host")
+    p.set_defaults(fn=cmd_install)
+    sub.add_parser("status").set_defaults(fn=cmd_status)
+    p = sub.add_parser("exec"); p.add_argument("command")
+    p.set_defaults(fn=cmd_exec)
+
+    args = ap.parse_args()
+    return args.fn(args) or 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
