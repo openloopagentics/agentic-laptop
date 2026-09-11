@@ -181,7 +181,8 @@ fixed layers:
 - One repo, an install script that symlinks user files and prints the root and
   remote steps instead of running them.
 - The tiny-dfr fork exported as patches, so the binary rebuilds from upstream
-  master rather than from a vendored copy.
+  master rather than from a vendored copy -- and published as a ready-to-build
+  branch at openloopagentics/tiny-dfr.
 
 ## The parts
 
@@ -249,12 +250,21 @@ with this repo; provider logos are trademarks, not MIT-licensed code.
 widgets, and exactly two layers; these add per-button colour and a palette,
 sparkline/rings/bars widgets, N layers switched from a button, and badges.
 
+The quickest route is the fork, whose default branch is upstream plus exactly
+these patches:
+
+    git clone https://github.com/openloopagentics/tiny-dfr ~/src/tiny-dfr
+    cd ~/src/tiny-dfr && cargo build --release
+
+Or apply them yourself onto upstream -- they were last rebased onto `eb711c8`;
+if a newer `master` refuses one, check that commit out before `git am`:
+
     git clone https://github.com/AsahiLinux/tiny-dfr ~/src/tiny-dfr
     cd ~/src/tiny-dfr && git am /path/to/agentic-laptop/tiny-dfr/patches/*.patch
     cargo build --release
 
-Last rebased onto upstream `eb711c8`. If a newer `master` refuses a patch,
-check that commit out before `git am`.
+The patches here are the source of truth; the fork's branch is rebuilt from
+them.
 
 The stock package is never modified. `dfr-switch custom|stock|status` flips a
 systemd drop-in between the two, verifies config keys before switching, and
