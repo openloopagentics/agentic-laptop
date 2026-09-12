@@ -31,6 +31,10 @@ import tomllib
 from pathlib import Path
 
 PIDFILE = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "dfrbar.pid"
+# The layer currently shown, written beside the pidfile. Nothing reads it to
+# work; it exists so the bar's state can be seen from outside, which is the
+# difference between testing navigation and testing that the process survived.
+LAYERFILE = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "dfrbar.layer"
 HEIGHT = 72
 PAD = 6
 REPO = Path(__file__).resolve().parent.parent.parent
@@ -109,6 +113,14 @@ def palette(cfg):
         if len(h) == 6:
             pal[name] = tuple(int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
     return pal
+
+
+def fn_cycle(cfg, lay):
+    """Layer names Fn walks, outermost first -- the same FnCycle key the strip
+    reads, so both surfaces descend in the same order. Unknown names are
+    dropped rather than shifting the rest."""
+    names = [n for n in (cfg.get("FnCycle") or []) if n in lay]
+    return names or ["primary", "media"]
 
 
 def layers(cfg):
@@ -387,22 +399,24 @@ def draw_badge(c, badge, x, y, w, h):
     centre_text(c, str(min(count, 99)), cx, cy, r * 1.3, (0.12, 0.12, 0.18))
 
 
-def draw(c, width, height, cfg, lay, layer, pal, badges, notice=None):
+def draw(c, width, height, cfg, lay, layer, pal, badges, notice=None, cycle=None):
     c.set_source_rgb(*BASE)
     rounded(c, 0, 0, width, height, 12)
     c.fill()
     c.select_font_face("sans")
+    cycle = cycle or fn_cycle(cfg, lay)
     hits = []
 
     chip = 46.0
-    # fn toggles the media layer, the way holding Fn does on the strip.
-    fn_on = layer == "media"
-    c.set_source_rgb(*(BLUE if fn_on else SURFACE))
+    # One step deeper per tap, like Fn on the strip. Lit whenever there is
+    # somewhere further to go.
+    deeper = layer != cycle[-1]
+    c.set_source_rgb(*(BLUE if not deeper else SURFACE))
     rounded(c, PAD, PAD, chip, height - 2 * PAD, 9)
     c.fill()
     centre_text(c, "fn", PAD + chip / 2, height / 2, 17,
-                (0.12, 0.12, 0.18) if fn_on else TEXT)
-    hits.append((PAD, PAD, chip, height - 2 * PAD, ("layer", "media" if not fn_on else "primary")))
+                (0.12, 0.12, 0.18) if not deeper else TEXT)
+    hits.append((PAD, PAD, chip, height - 2 * PAD, ("descend", None)))
 
     buttons = lay.get(layer, [])
     x0 = PAD * 2 + chip
@@ -464,7 +478,8 @@ def main():
         return 0
 
     badges = read_toml(cfg.get("BadgeFile", "")) if cfg.get("BadgeFile") else {}
-    start_layer = "media" if cfg.get("MediaLayerDefault") else "primary"
+    cycle = fn_cycle(cfg, lay)
+    start_layer = cycle[0]
 
     if "--png" in argv:
         import cairo
@@ -473,7 +488,7 @@ def main():
         which = os.environ.get("DFRBAR_LAYER", start_layer)
         surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, HEIGHT)
         draw(cairo.Context(surf), w, HEIGHT, cfg, lay, which, pal, badges,
-             os.environ.get("DFRBAR_NOTICE"))
+             os.environ.get("DFRBAR_NOTICE"), fn_cycle(cfg, lay))
         surf.write_to_png(argv[i + 1])
         return 0
 
@@ -508,11 +523,13 @@ def main():
     from gi.repository import Gtk, Gdk, GLib, Gtk4LayerShell as LayerShell
 
     PIDFILE.write_text(str(os.getpid()))
+    LAYERFILE.write_text(start_layer)
     def _bye(*_):
         # Remove the pidfile here rather than in a `finally`: while GTK's main
         # loop owns the thread, sys.exit from a handler does not unwind far
         # enough to run one, and the file outlives the bar.
         PIDFILE.unlink(missing_ok=True)
+        LAYERFILE.unlink(missing_ok=True)
         os._exit(0)
 
     signal.signal(signal.SIGTERM, _bye)
@@ -546,16 +563,42 @@ def main():
                         if "Permission denied" in str(inject.error)
                         else f"cannot send keys: {inject.error}")
             state["hits"] = draw(c, w, h, cfg, lay, state["layer"], pal,
-                                 state["badges"], note)
+                                 state["badges"], note, cycle)
 
         area.set_draw_func(on_draw)
         win.set_child(area)
+
+        def show(name):
+            state["layer"] = name
+            try:
+                LAYERFILE.write_text(name)
+            except OSError:
+                pass
+            area.queue_draw()
+
+        def go(delta_or_top):
+            here = cycle.index(state["layer"]) if state["layer"] in cycle else 0
+            if delta_or_top == "top" and state["layer"] == cycle[0]:
+                app.quit()          # already at the top: the only way left is out
+                return True
+            nxt = cycle[0] if delta_or_top == "top" else cycle[min(here + 1, len(cycle) - 1)]
+            if nxt != state["layer"]:
+                show(nxt)
+            return True
+
+        def step(_delta):
+            return go("down")
+
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, go, "down")
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR2, go, "top")
 
         def on_click(_g, _n, px, py):
             for x, y, w, h, target in state["hits"]:
                 if x <= px <= x + w and y <= py <= y + h:
                     kind, val = target
-                    if kind == "layer":
+                    if kind == "descend":
+                        step(1)
+                    elif kind == "layer":
                         state["layer"] = val if val in lay else "primary"
                         area.queue_draw()
                     else:
@@ -589,6 +632,7 @@ def main():
         return app.run([])
     finally:
         PIDFILE.unlink(missing_ok=True)
+        LAYERFILE.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

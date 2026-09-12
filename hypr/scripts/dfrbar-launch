@@ -11,6 +11,7 @@ set -uo pipefail
 
 BAR="$HOME/.config/hypr/scripts/dfrbar.py"
 STAMP="${XDG_RUNTIME_DIR:-/tmp}/dfrbar-ctrl-tap"
+PIDFILE="${XDG_RUNTIME_DIR:-/tmp}/dfrbar.pid"
 DOUBLE_TAP_MS=${DFRBAR_DOUBLE_TAP_MS:-400}
 
 has_touchbar() {
@@ -33,6 +34,16 @@ has_touchbar() {
     [ "$ans" = yes ]
 }
 
+# The bar never takes the keyboard, so it cannot hear Fn or Ctrl itself: this
+# script owns those keys and signals it instead. USR1 descends a layer, USR2
+# returns to the top -- and at the top, dismisses.
+running_pid() {
+    local p
+    p=$(cat "$PIDFILE" 2>/dev/null) || return 1
+    [ -n "$p" ] && [ -d "/proc/$p" ] && grep -qa dfrbar "/proc/$p/cmdline" 2>/dev/null || return 1
+    printf '%s' "$p"
+}
+
 launch() {
     # The bar refuses to draw where a real strip exists, which is right for Fn
     # on such a machine but not for the key the user deliberately chose.
@@ -52,9 +63,12 @@ INNER
 
 case "${1:-fn}" in
     fn)
+        if pid=$(running_pid); then kill -USR1 "$pid"; exit 0; fi
         has_touchbar && exit 0      # Fn belongs to the strip on this machine
         launch ;;
     ctrl)
+        # While the bar is up, a single tap is navigation, not a summons.
+        if pid=$(running_pid); then kill -USR2 "$pid"; exit 0; fi
         has_touchbar || exit 0      # elsewhere Fn is the trigger, not Ctrl
         now=$(date +%s%3N)
         last=$(cat "$STAMP" 2>/dev/null || echo 0)
