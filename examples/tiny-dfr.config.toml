@@ -41,20 +41,15 @@ PrimaryLayerKeys = [
 # Catppuccin Mocha, matching waybar and the F-key overlay.
 
 # The Fn layer, copied from the base config so the F1-12 switch can be added.
+# Fn shows the customers, not the media keys: this is layer 1, which is
+# what Fn toggles to. The media keys moved to [ExtraLayers].mediakeys,
+# reached by the button at the end of this row.
 MediaLayerKeys = [
-    { Icon = "brightness_low", Action = "BrightnessDown" },
-    { Icon = "brightness_high", Action = "BrightnessUp" },
-    { Icon = "mic_off", Action = "MicMute" },
-    { Icon = "search", Action = "Search" },
-    { Icon = "backlight_low", Action = "IllumDown" },
-    { Icon = "backlight_high", Action = "IllumUp" },
-    { Icon = "fast_rewind", Action = "PreviousSong" },
-    { Icon = "play_pause", Action = "PlayPause" },
-    { Icon = "fast_forward", Action = "NextSong" },
-    { Icon = "volume_off", Action = "Mute" },
-    { Icon = "volume_down", Action = "VolumeDown" },
-    { Icon = "volume_up", Action = "VolumeUp" },
-    { Text = "F1-12", Layer = "fkeys", Color = "peach" }
+    { Text = "eta", Action = [ "LeftMeta", "LeftShift", "C" ], Color = "yellow", Badge = "eta" },
+    { Text = "theta", Action = [ "LeftMeta", "LeftShift", "K" ], Color = "blue", Badge = "theta" },
+    { Text = "iota", Action = [ "LeftMeta", "LeftShift", "Q" ], Color = "mauve", Badge = "iota" },
+    { Text = "kappa", Action = [ "LeftMeta", "LeftShift", "J" ], Color = "green", Badge = "kappa" },
+    { Text = "media", Layer = "mediakeys", Color = "peach" }
 ]
 
 # Attention badges, written by claude-badged from remote Claude hooks.
@@ -92,4 +87,24 @@ fkeys = [
     { Text = "F11", Action = "F11" },
     { Text = "F12", Action = "F12" },
     { Text = "back", Layer = "primary", Color = "peach" }
+]
+
+# The media keys, displaced from Fn by the customers layer. `back` returns
+# to that layer, which is still called "media" internally because it is
+# the built-in layer-1 slot, whatever it happens to contain.
+mediakeys = [
+    { Icon = "brightness_low", Action = "BrightnessDown" },
+    { Icon = "brightness_high", Action = "BrightnessUp" },
+    { Icon = "mic_off", Action = "MicMute" },
+    { Icon = "search", Action = "Search" },
+    { Icon = "backlight_low", Action = "IllumDown" },
+    { Icon = "backlight_high", Action = "IllumUp" },
+    { Icon = "fast_rewind", Action = "PreviousSong" },
+    { Icon = "play_pause", Action = "PlayPause" },
+    { Icon = "fast_forward", Action = "NextSong" },
+    { Icon = "volume_off", Action = "Mute" },
+    { Icon = "volume_down", Action = "VolumeDown" },
+    { Icon = "volume_up", Action = "VolumeUp" },
+    { Text = "F1-12", Layer = "fkeys", Color = "peach" }
+    ,{ Text = "back", Layer = "media", Color = "peach" }
 ]

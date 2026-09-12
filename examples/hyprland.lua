@@ -285,6 +285,9 @@ local projects = {
     { name = "epsilon",         key = "H" },
     { name = "zeta", key = "L" },
     { name = "eta",        key = "C" },
+    { name = "theta",           key = "K" },
+    { name = "iota",            key = "Q" },
+    { name = "kappa",           key = "J" },
 }
 
 for _, proj in ipairs(projects) do
