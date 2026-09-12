@@ -135,6 +135,7 @@ class Injector:
     def __init__(self, every_action):
         self.ui = None
         self.warned = False
+        self.error = None
         self.every = every_action
 
     @staticmethod
@@ -184,6 +185,9 @@ class Injector:
         self.ui.syn()
 
     def complain(self, msg):
+        # The bar is launched from a keybind, so stderr goes nowhere a person
+        # will look; the bar has to say this itself.
+        self.error = msg
         if not self.warned:
             print(f"dfrbar: cannot send keys: {msg}", file=sys.stderr)
             self.warned = True
@@ -378,7 +382,7 @@ def draw_badge(c, badge, x, y, w, h):
     centre_text(c, str(min(count, 99)), cx, cy, r * 1.3, (0.12, 0.12, 0.18))
 
 
-def draw(c, width, height, cfg, lay, layer, pal, badges):
+def draw(c, width, height, cfg, lay, layer, pal, badges, notice=None):
     c.set_source_rgb(*BASE)
     rounded(c, 0, 0, width, height, 12)
     c.fill()
@@ -432,6 +436,17 @@ def draw(c, width, height, cfg, lay, layer, pal, badges):
         target = ("layer", b["Layer"]) if b.get("Layer") else ("keys", actions_of(b))
         hits.append((x, y, w, h, target))
         x += w + 4
+
+    if notice:
+        # Buttons that quietly do nothing are worse than a bar that says why.
+        c.set_font_size(12)
+        e = c.text_extents(notice)
+        pw, ph = e.width + 18, 18.0
+        px = (width - pw) / 2
+        c.set_source_rgb(*ASK)
+        rounded(c, px, 1, pw, ph, 6)
+        c.fill()
+        centre_text(c, notice, width / 2, 1 + ph / 2, 12, (0.12, 0.12, 0.18))
     return hits
 
 
@@ -458,7 +473,8 @@ def main():
         w = int(argv[i + 2]) if len(argv) > i + 2 and argv[i + 2].isdigit() else 1600
         which = os.environ.get("DFRBAR_LAYER", start_layer)
         surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, HEIGHT)
-        draw(cairo.Context(surf), w, HEIGHT, cfg, lay, which, pal, badges)
+        draw(cairo.Context(surf), w, HEIGHT, cfg, lay, which, pal, badges,
+             os.environ.get("DFRBAR_NOTICE"))
         surf.write_to_png(argv[i + 1])
         return 0
 
@@ -519,7 +535,13 @@ def main():
         area.set_content_height(HEIGHT)
 
         def on_draw(_a, c, w, h):
-            state["hits"] = draw(c, w, h, cfg, lay, state["layer"], pal, state["badges"])
+            note = None
+            if inject.error:
+                note = ("no access to /dev/uinput -- log out and back in"
+                        if "Permission denied" in str(inject.error)
+                        else f"cannot send keys: {inject.error}")
+            state["hits"] = draw(c, w, h, cfg, lay, state["layer"], pal,
+                                 state["badges"], note)
 
         area.set_draw_func(on_draw)
         win.set_child(area)
