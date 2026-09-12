@@ -339,6 +339,12 @@ For the commit counter, say where your repos are and who you are:
 systemd reads this file too, and takes any `#` after a value as part of the
 value, so keep comments on their own lines.
 
+## Running this on a Mac
+
+`docs/macos-port.md` is a specification for porting this to macOS: what
+ports unchanged, what has to be rewritten, the constraints verified as of
+September 2026, and the dead ends not worth repeating.
+
 ## Known rough edges
 
 - Codex hooks must be trusted once, interactively, before they run. Run
