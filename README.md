@@ -162,8 +162,9 @@ fixed layers:
   of Ctrl**; on a machine without one, **Fn** shows it. The Ctrl binding is
   non-consuming, so Ctrl keeps working as an ordinary modifier.
 - Navigation is by tap, since there is no Fn to hold: the `fn` chip toggles
-  the media layer, buttons carrying a `Layer` key switch to it (the stock
-  config's `F1-12`, and `back` to return), and `x` dismisses the bar.
+  the media layer, and buttons carrying a `Layer` key switch to it (the stock
+  config's `F1-12`, and `back` to return). The trigger key dismisses it, the
+  same key that summoned it.
 - It reserves its own strip: tiled windows are pushed up to make room rather
   than being covered, the way waybar reserves the top. `--overlay` floats it
   over the windows instead.

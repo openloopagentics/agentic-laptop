@@ -11,8 +11,9 @@ compositor keybinds, so a real kernel-level device is the only route that
 makes a workspace or media button behave like the strip's.
 
 Navigation is by tap, since there is no Fn key to hold: the `fn` chip at the
-left toggles the media layer, buttons carrying a Layer key switch to it (the
-stock config's `F1-12` and `back`), and `x` dismisses the bar.
+left toggles the media layer, and buttons carrying a Layer key switch to it
+(the stock config's `F1-12` and `back`). The bar is dismissed the same way it
+was summoned -- the trigger key, which dfrbar-launch binds per machine.
 
 By default the bar reserves its own strip along the bottom: tiled windows are
 pushed up to make room rather than being covered, the way a status bar does.
@@ -403,15 +404,9 @@ def draw(c, width, height, cfg, lay, layer, pal, badges, notice=None):
                 (0.12, 0.12, 0.18) if fn_on else TEXT)
     hits.append((PAD, PAD, chip, height - 2 * PAD, ("layer", "media" if not fn_on else "primary")))
 
-    c.set_source_rgb(*SURFACE)
-    rounded(c, width - PAD - chip, PAD, chip, height - 2 * PAD, 9)
-    c.fill()
-    centre_text(c, "x", width - PAD - chip / 2, height / 2, 18, SUBTEXT)
-    hits.append((width - PAD - chip, PAD, chip, height - 2 * PAD, ("quit", None)))
-
     buttons = lay.get(layer, [])
     x0 = PAD * 2 + chip
-    x1 = width - PAD * 2 - chip
+    x1 = width - PAD
     total = sum(max(int(b.get("Stretch", 1) or 1), 1) for b in buttons) or 1
     span = (x1 - x0) / total
     x = x0
@@ -560,9 +555,7 @@ def main():
             for x, y, w, h, target in state["hits"]:
                 if x <= px <= x + w and y <= py <= y + h:
                     kind, val = target
-                    if kind == "quit":
-                        app.quit()
-                    elif kind == "layer":
+                    if kind == "layer":
                         state["layer"] = val if val in lay else "primary"
                         area.queue_draw()
                     else:
