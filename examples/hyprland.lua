@@ -538,6 +538,11 @@ hl.bind(mainMod .. " + N", hl.dsp.exec_cmd("$HOME/.local/bin/ws-attention"),
 -- function row; the overlay never takes keyboard focus, so the keys it
 -- sends land in whatever window is actually focused. Re-run to dismiss.
 hl.bind(mainMod .. " + R", hl.dsp.exec_cmd("$HOME/.config/hypr/scripts/fkeys-overlay.py"), { description = "F-key overlay" })
+-- The Touch Bar on screen, for machines that have no Touch Bar. Fn reaches
+-- the compositor as XF86Fn (on Apple keyboards also as code:472); the script
+-- refuses to draw on a machine that has a real strip, so binding it here is
+-- harmless either way.
+hl.bind("XF86Fn", hl.dsp.exec_cmd("$HOME/.config/hypr/scripts/dfrbar.py"), { description = "On-screen Touch Bar" })
 -- Also sent by the Touch Bar's commit counter, so tapping the figures opens
 -- the month behind them.
 hl.bind(mainMod .. " + SHIFT + G", hl.dsp.exec_cmd("$HOME/.config/hypr/scripts/commitheat.py"), { description = "Commits by hour" })

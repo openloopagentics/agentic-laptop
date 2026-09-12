@@ -57,6 +57,14 @@ cat <<NOTE
 == still needs the remote host ==
   agentic-fleet install <host>     # see remote/README.md
 
+== optional: the on-screen bar, on a machine with no Touch Bar ==
+  # hypr/scripts/dfrbar.py, already symlinked above and bound to Fn
+  sudo pacman -S --needed python-evdev
+  sudo groupadd -f uinput
+  sudo install -m644 $REPO/config/99-uinput.rules /etc/udev/rules.d/99-uinput.rules
+  sudo udevadm control --reload-rules && sudo udevadm trigger /dev/uinput
+  sudo usermod -aG uinput "$USER"      # then log out and back in
+
 == optional: the commit counter ==
   # ~/.config/agentic-laptop/gitcommits.env
   GITCOMMITS_HOST=<host with your repos>

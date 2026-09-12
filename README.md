@@ -150,6 +150,27 @@ fixed layers:
   writes into each transcript. `climits` says you are at 24%; this says which
   project spent it.
 
+**The Touch Bar on a machine that has none**
+
+- `dfrbar.py` draws the same buttons in a layer-shell bar along the bottom of
+  the screen, reading the same tiny-dfr config and the same state files, so
+  badges, usage bars and the commit counter all appear as they do on the
+  strip. Fn shows it; it refuses to draw on a machine that has a real strip,
+  so the same keybind is safe everywhere.
+- Navigation is by tap, since there is no Fn to hold: the `fn` chip toggles
+  the media layer, buttons carrying a `Layer` key switch to it (the stock
+  config's `F1-12`, and `back` to return), and `x` dismisses the bar.
+- Icons come from tiny-dfr's own set when installed, and from the icon theme
+  otherwise, painted through a mask so symbolic icons -- black on transparent,
+  and invisible on a dark bar -- take the button's colour.
+- Clicks are injected through a uinput virtual keyboard, which needs the udev
+  rule in `config/99-uinput.rules` and membership of the `uinput` group. That
+  grants permission to inject events, not to read your keystrokes. The Wayland
+  virtual-keyboard protocol is not enough: keys sent that way reach
+  applications but never trigger compositor keybinds, so a workspace or media
+  button would do nothing. Without uinput the bar still draws and still
+  switches layers.
+
 **Commit counter**
 
 - `gitcommits` counts the commits you authored across every repo under one
@@ -195,6 +216,7 @@ fixed layers:
 | `bin/gitcommits` | Counts your commits on a remote host, for the Touch Bar and the by-hour overlay |
 | `hypr/scripts/commitheat.py` | The commits-by-hour overlay |
 | `hypr/scripts/llmdetail.py` | The per-account usage detail overlay |
+| `hypr/scripts/dfrbar.py` | The Touch Bar drawn on screen, for machines without one |
 | `node/` | What `agentic-fleet install` puts on each node |
 | `examples/` | Shareable Hyprland and Touch Bar config, with placeholder names |
 | `hypr/` | Hyprland config: named project workspaces with sub-workspaces |

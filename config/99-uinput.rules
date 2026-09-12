@@ -1,0 +1,14 @@
+# Let members of the "uinput" group inject synthetic input events, which is
+# how the on-screen bar's buttons reach the compositor. Keys sent through the
+# Wayland virtual-keyboard protocol reach applications but never trigger
+# compositor keybinds, so a real kernel-level device is the only route.
+#
+# This grants write access to /dev/uinput only. It deliberately does NOT use
+# the "input" group, membership of which would also allow reading every
+# keystroke from /dev/input/event* -- injection needs no such power.
+#
+#   sudo groupadd -f uinput
+#   sudo install -m644 config/99-uinput.rules /etc/udev/rules.d/99-uinput.rules
+#   sudo udevadm control --reload-rules && sudo udevadm trigger /dev/uinput
+#   sudo usermod -aG uinput "$USER"     # then log out and back in
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="uinput", MODE="0660", OPTIONS+="static_node=uinput"
