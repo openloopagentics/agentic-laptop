@@ -1,0 +1,135 @@
+From 86d1abbcf01818e3defce5dcbb6e527737d614b6 Mon Sep 17 00:00:00 2001
+From: Ravikant Cherukuri <ravi@openloopagentics.com>
+Date: Sat, 12 Sep 2026 00:34:10 -0700
+Subject: [PATCH] Let Fn descend through layers, and Ctrl return to the top
+
+Fn showed layer 1 only while held, which works for two layers and breaks down
+past them: reaching a third layer meant tapping its button while still holding
+Fn, and releasing Fn threw you straight back to layer 0. A layer reachable
+only while a key is held is not reachable.
+
+Add FnCycle, an ordered list of layer names. When set, Fn advances one level
+per press and stops at the deepest, and a Ctrl tap returns to the first.
+Release no longer resets, so a layer stays put once you are on it. Absent, the
+stock hold-to-show behaviour is untouched, as is DoublePressSwitchLayers,
+which is ignored when a cycle is configured -- both want the same key.
+
+Ctrl only pops when tapped alone: any other key pressed while it is held means
+a shortcut is being typed, and the strip should not jump to the top every time
+you press Ctrl+C.
+
+Names resolve through the same map the Layer key uses, so an unknown name
+drops that step rather than shifting every index after it.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01UmcdUC47KEJPE7hWccLyV6
+---
+ src/config.rs | 14 ++++++++++++++
+ src/main.rs   | 38 +++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 51 insertions(+), 1 deletion(-)
+
+diff --git a/src/config.rs b/src/config.rs
+index af428d4..4dd1e17 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -79,6 +79,9 @@ pub struct Config {
+     pub adaptive_brightness: bool,
+     pub active_brightness: u32,
+     pub double_press_switch_layers: u32,
++    /// Layer indices Fn walks through, in order, deepest last. Empty keeps the
++    /// stock behaviour, where Fn shows layer 1 only while it is held.
++    pub fn_cycle: Vec<usize>,
+ }
+ 
+ #[derive(Deserialize)]
+@@ -91,6 +94,7 @@ struct ConfigProxy {
+     adaptive_brightness: Option<bool>,
+     active_brightness: Option<u32>,
+     double_press_switch_layers: Option<u32>,
++    fn_cycle: Option<Vec<String>>,
+     palette: Option<HashMap<String, String>>,
+     extra_layers: Option<HashMap<String, Vec<ButtonConfig>>>,
+     badge_file: Option<String>,
+@@ -197,6 +201,7 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
+         base.primary_layer_keys = user.primary_layer_keys.or(base.primary_layer_keys);
+         base.active_brightness = user.active_brightness.or(base.active_brightness);
+         base.double_press_switch_layers = user.double_press_switch_layers.or(base.double_press_switch_layers);
++        base.fn_cycle = user.fn_cycle.or(base.fn_cycle);
+         base.palette = user.palette.or(base.palette);
+         base.extra_layers = user.extra_layers.or(base.extra_layers);
+         base.badge_file = user.badge_file.or(base.badge_file);
+@@ -282,6 +287,15 @@ fn load_config(width: u16) -> (Config, Vec<FunctionLayer>) {
+         font_face: load_font(&base.font_template.unwrap()),
+         active_brightness: base.active_brightness.unwrap(),
+         double_press_switch_layers: base.double_press_switch_layers.unwrap(),
++        // Names resolve through the same map the Layer key uses, so a typo
++        // drops that step rather than shifting every later index.
++        fn_cycle: base
++            .fn_cycle
++            .take()
++            .unwrap_or_default()
++            .iter()
++            .filter_map(|n| index_of.get(n).copied())
++            .collect(),
+     };
+     (cfg, layers)
+ }
+diff --git a/src/main.rs b/src/main.rs
+index 6416989..110fbb3 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1237,6 +1237,8 @@ fn real_main(drm: &mut DrmBackend) {
+     let mut surface =
+         ImageSurface::create(Format::ARgb32, db_width as i32, db_height as i32).unwrap();
+     let mut active_layer = 0;
++    // Ctrl pops to the top, but only when tapped on its own.
++    let mut ctrl_alone = false;
+     let mut needs_complete_redraw = true;
+ 
+     let mut input_tb = Libinput::new_with_udev(Interface);
+@@ -1431,7 +1433,41 @@ fn real_main(drm: &mut DrmBackend) {
+                     }
+                 }
+                 Event::Keyboard(KeyboardEvent::Key(key)) => {
+-                    if key.key() == Key::Fn as u32 {
++                    let is_fn = key.key() == Key::Fn as u32;
++                    let is_ctrl = key.key() == Key::LeftCtrl as u32
++                        || key.key() == Key::RightCtrl as u32;
++                    // Any other key while Ctrl is down means a shortcut is
++                    // being typed, not a tap: do not pop the layer for it.
++                    if !is_ctrl && key.key_state() == KeyState::Pressed {
++                        ctrl_alone = false;
++                    }
++                    if is_ctrl && !cfg.fn_cycle.is_empty() {
++                        match key.key_state() {
++                            KeyState::Pressed => ctrl_alone = true,
++                            KeyState::Released => {
++                                let top = cfg.fn_cycle[0];
++                                if ctrl_alone && active_layer != top {
++                                    active_layer = top;
++                                    needs_complete_redraw = true;
++                                }
++                            }
++                        }
++                    }
++                    if is_fn && !cfg.fn_cycle.is_empty() {
++                        // Fn descends one level per press and stops at the
++                        // deepest; Ctrl is the way back, so wrapping would
++                        // only make the bottom feel like a dead end.
++                        if key.key_state() == KeyState::Pressed {
++                            let next = match cfg.fn_cycle.iter().position(|&i| i == active_layer) {
++                                Some(i) => cfg.fn_cycle[(i + 1).min(cfg.fn_cycle.len() - 1)],
++                                None => cfg.fn_cycle[0],
++                            };
++                            if next != active_layer {
++                                active_layer = next;
++                                needs_complete_redraw = true;
++                            }
++                        }
++                    } else if is_fn {
+                         if cfg.double_press_switch_layers > 0 && key.key_state() == KeyState::Pressed {
+                             if last.elapsed() < Duration::from_millis(cfg.double_press_switch_layers.into()) {
+                                 layers.swap(0, 1);
+-- 
+2.55.0
+

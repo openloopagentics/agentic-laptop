@@ -8,7 +8,12 @@ MediaLayerDefault = false
 # Required by builds newer than 0.3.7: the daemon unwraps this from the merged
 # config, and the stock /usr/share base config predates the key. Milliseconds
 # for a double-press of Fn to swap the default layer; 0 disables.
-DoublePressSwitchLayers = 250
+DoublePressSwitchLayers = 0
+
+# Fn descends one level per press and stops at the deepest; Ctrl, tapped on
+# its own, returns to the top. Ordered outermost first. With this set, the
+# double-press swap above is ignored -- the two fight over the same key.
+FnCycle = ["primary", "media", "mediakeys", "fkeys"]
 
 # Default layer: the six named Hyprland workspaces.
 # Each button sends the same combo as the keyboard bind, so Hyprland
