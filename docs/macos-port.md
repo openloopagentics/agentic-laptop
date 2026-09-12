@@ -101,7 +101,16 @@ Four layers, three of which already exist:
 | `hyprctl` focus events | `NSWorkspace` notifications | badge clearing on visit |
 | tiny-dfr + 22 patches | dropped | no hardware — §7 |
 | `dfrbar.py` | Swift panel | same layout, same state files |
+| layer-shell exclusive zone | no direct equivalent | see note below |
 | trackpad gestures | BetterTouchTool | no native equivalent — §7 |
+
+**Reserving screen space.** On Wayland the bar reserves its strip with a
+layer-shell exclusive zone, and the compositor shrinks the tiling area for it.
+macOS has no such protocol: a floating `NSPanel` always overlaps. The
+equivalent is to shrink the window manager's own usable area -- `yabai -m
+config external_bar main:0:80` reserves 80px at the bottom -- and toggle that
+alongside the bar. Budget for it in P4; it is not free the way the exclusive
+zone is.
 
 ## 6. The one open decision: SIP
 

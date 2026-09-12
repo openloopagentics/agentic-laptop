@@ -164,6 +164,9 @@ fixed layers:
 - Navigation is by tap, since there is no Fn to hold: the `fn` chip toggles
   the media layer, buttons carrying a `Layer` key switch to it (the stock
   config's `F1-12`, and `back` to return), and `x` dismisses the bar.
+- It reserves its own strip: tiled windows are pushed up to make room rather
+  than being covered, the way waybar reserves the top. `--overlay` floats it
+  over the windows instead.
 - Icons come from tiny-dfr's own set when installed, and from the icon theme
   otherwise, painted through a mask so symbolic icons -- black on transparent,
   and invisible on a dark bar -- take the button's colour.

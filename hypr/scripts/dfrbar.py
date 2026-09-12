@@ -14,9 +14,13 @@ Navigation is by tap, since there is no Fn key to hold: the `fn` chip at the
 left toggles the media layer, buttons carrying a Layer key switch to it (the
 stock config's `F1-12` and `back`), and `x` dismisses the bar.
 
+By default the bar reserves its own strip along the bottom: tiled windows are
+pushed up to make room rather than being covered, the way a status bar does.
+
     --png FILE   draw one frame to a file instead of the screen
     --dump       print the parsed layers and exit
     --force      show even on a machine that has a Touch Bar
+    --overlay    float over the windows instead of reserving space
 """
 import os
 import signal
@@ -478,6 +482,7 @@ def main():
         surf.write_to_png(argv[i + 1])
         return 0
 
+    overlay = "--overlay" in argv
     if has_touchbar() and "--force" not in argv:
         print("dfrbar: this machine has a Touch Bar; use --force to show anyway",
               file=sys.stderr)
@@ -530,6 +535,11 @@ def main():
         for edge in (LayerShell.Edge.BOTTOM, LayerShell.Edge.LEFT, LayerShell.Edge.RIGHT):
             LayerShell.set_anchor(win, edge, True)
         LayerShell.set_margin(win, LayerShell.Edge.BOTTOM, 8)
+        if not overlay:
+            # Reserve the strip, so the compositor shrinks the tiling area and
+            # windows move up instead of sitting underneath the bar. Derived
+            # from the anchored edge and size, so it accounts for the margin.
+            LayerShell.auto_exclusive_zone_enable(win)
 
         area = Gtk.DrawingArea()
         area.set_content_height(HEIGHT)
