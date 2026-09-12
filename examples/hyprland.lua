@@ -538,11 +538,14 @@ hl.bind(mainMod .. " + N", hl.dsp.exec_cmd("$HOME/.local/bin/ws-attention"),
 -- function row; the overlay never takes keyboard focus, so the keys it
 -- sends land in whatever window is actually focused. Re-run to dismiss.
 hl.bind(mainMod .. " + R", hl.dsp.exec_cmd("$HOME/.config/hypr/scripts/fkeys-overlay.py"), { description = "F-key overlay" })
--- The Touch Bar on screen, for machines that have no Touch Bar. Fn reaches
--- the compositor as XF86Fn (on Apple keyboards also as code:472); the script
--- refuses to draw on a machine that has a real strip, so binding it here is
--- harmless either way.
-hl.bind("XF86Fn", hl.dsp.exec_cmd("$HOME/.config/hypr/scripts/dfrbar.py"), { description = "On-screen Touch Bar" })
+-- The Touch Bar on screen. Where a real strip exists Fn belongs to it, so the
+-- bar answers to a double-tap of Ctrl there and leaves Fn alone; elsewhere
+-- there is no conflict and Fn is the trigger. dfrbar-launch decides which,
+-- per machine, so this pair is correct everywhere.
+-- The Ctrl bind is non-consuming: Ctrl keeps working as a modifier.
+hl.bind("XF86Fn", hl.dsp.exec_cmd("$HOME/.config/hypr/scripts/dfrbar-launch fn"), { description = "On-screen Touch Bar (Fn)" })
+hl.bind("Control_L", hl.dsp.exec_cmd("$HOME/.config/hypr/scripts/dfrbar-launch ctrl"), { description = "On-screen Touch Bar (double-tap Ctrl)", non_consuming = true })
+hl.bind("Control_R", hl.dsp.exec_cmd("$HOME/.config/hypr/scripts/dfrbar-launch ctrl"), { description = "On-screen Touch Bar (double-tap Ctrl)", non_consuming = true })
 -- Also sent by the Touch Bar's commit counter, so tapping the figures opens
 -- the month behind them.
 hl.bind(mainMod .. " + SHIFT + G", hl.dsp.exec_cmd("$HOME/.config/hypr/scripts/commitheat.py"), { description = "Commits by hour" })

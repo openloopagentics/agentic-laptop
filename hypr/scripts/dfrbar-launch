@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Decide whether this key should open the on-screen bar, and open it.
+#
+#   dfrbar-launch fn     bound to Fn
+#   dfrbar-launch ctrl   bound to Control, non-consuming, so Ctrl still works
+#
+# A machine with a Touch Bar already uses Fn for the strip's own layers, so
+# there the bar answers to a double-tap of Ctrl instead and Fn is left alone.
+# A machine without one has no such conflict and answers to Fn.
+set -uo pipefail
+
+BAR="$HOME/.config/hypr/scripts/dfrbar.py"
+STAMP="${XDG_RUNTIME_DIR:-/tmp}/dfrbar-ctrl-tap"
+DOUBLE_TAP_MS=${DFRBAR_DOUBLE_TAP_MS:-400}
+
+has_touchbar() {
+    # Bound to a bare modifier, this runs on every Ctrl press; the answer
+    # cannot change while the session lives, so it is worth remembering.
+    local cache="${XDG_RUNTIME_DIR:-/tmp}/dfrbar-touchbar" conn card ans=no
+    if [ -f "$cache" ]; then
+        [ "$(cat "$cache")" = yes ]
+        return
+    fi
+    for conn in /sys/class/drm/card*-*; do
+        [ -e "$conn/status" ] || continue
+        [ "$(cat "$conn/status")" = connected ] || continue
+        card=${conn##*/}; card=${card%%-*}
+        case "$(basename "$(readlink -f "/sys/class/drm/$card/device/driver" 2>/dev/null)")" in
+            adp|appletbdrm) ans=yes; break ;;
+        esac
+    done
+    printf '%s\n' "$ans" > "$cache"
+    [ "$ans" = yes ]
+}
+
+launch() {
+    # The bar refuses to draw where a real strip exists, which is right for Fn
+    # on such a machine but not for the key the user deliberately chose.
+    local args=()
+    has_touchbar && args+=(--force)
+    # Membership of "uinput" granted but not yet picked up by this session --
+    # newgrp gets it without making the user log out first.
+    if ! id -nG | tr ' ' '\n' | grep -qx uinput \
+       && id -nG "$USER" 2>/dev/null | tr ' ' '\n' | grep -qx uinput; then
+        newgrp uinput <<INNER
+setsid nohup "$BAR" ${args[*]} >/dev/null 2>&1 </dev/null &
+INNER
+    else
+        setsid nohup "$BAR" "${args[@]}" >/dev/null 2>&1 </dev/null &
+    fi
+}
+
+case "${1:-fn}" in
+    fn)
+        has_touchbar && exit 0      # Fn belongs to the strip on this machine
+        launch ;;
+    ctrl)
+        has_touchbar || exit 0      # elsewhere Fn is the trigger, not Ctrl
+        now=$(date +%s%3N)
+        last=$(cat "$STAMP" 2>/dev/null || echo 0)
+        echo "$now" > "$STAMP"
+        [ $((now - last)) -le "$DOUBLE_TAP_MS" ] || exit 0
+        : > "$STAMP"                # consume it, so a third tap starts over
+        launch ;;
+    *) echo "usage: dfrbar-launch fn|ctrl" >&2; exit 2 ;;
+esac

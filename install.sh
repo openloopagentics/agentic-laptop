@@ -58,7 +58,8 @@ cat <<NOTE
   agentic-fleet install <host>     # see remote/README.md
 
 == optional: the on-screen bar, on a machine with no Touch Bar ==
-  # hypr/scripts/dfrbar.py, already symlinked above and bound to Fn
+  # hypr/scripts/dfrbar.py, already symlinked above. Fn shows it; on a
+  # machine that has a real Touch Bar, double-tap Ctrl instead.
   sudo pacman -S --needed python-evdev
   sudo groupadd -f uinput
   sudo install -m644 $REPO/config/99-uinput.rules /etc/udev/rules.d/99-uinput.rules

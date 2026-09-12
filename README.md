@@ -155,8 +155,12 @@ fixed layers:
 - `dfrbar.py` draws the same buttons in a layer-shell bar along the bottom of
   the screen, reading the same tiny-dfr config and the same state files, so
   badges, usage bars and the commit counter all appear as they do on the
-  strip. Fn shows it; it refuses to draw on a machine that has a real strip,
-  so the same keybind is safe everywhere.
+  strip.
+- How you summon it depends on the machine, and `dfrbar-launch` decides per
+  machine so one config is right everywhere: where a real Touch Bar exists Fn
+  belongs to the strip's own layers, so there the bar answers to a **double-tap
+  of Ctrl**; on a machine without one, **Fn** shows it. The Ctrl binding is
+  non-consuming, so Ctrl keeps working as an ordinary modifier.
 - Navigation is by tap, since there is no Fn to hold: the `fn` chip toggles
   the media layer, buttons carrying a `Layer` key switch to it (the stock
   config's `F1-12`, and `back` to return), and `x` dismisses the bar.
