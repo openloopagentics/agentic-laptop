@@ -24,6 +24,16 @@ import json, glob, os, subprocess, sys, time
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 
 
+def cred_path(home):
+    """Credentials sit beside the config, whichever layout is in use: the
+    default keeps them in ~/.claude/, a CLAUDE_CONFIG_DIR account keeps them
+    in that directory itself."""
+    beside = os.path.join(home, ".credentials.json")
+    if os.path.exists(beside):
+        return beside
+    return os.path.join(home, ".claude/.credentials.json")
+
+
 def live_usage(home):
     """Ask the API for current utilisation.
 
@@ -33,7 +43,7 @@ def live_usage(home):
     any failure (expired token, no network) falls back to the cache.
     """
     try:
-        creds = json.load(open(os.path.join(home, ".claude/.credentials.json")))
+        creds = json.load(open(cred_path(home)))
         tok = (creds.get("claudeAiOauth") or {}).get("accessToken")
         if not tok:
             return None
@@ -57,10 +67,17 @@ for p in paths:
     except Exception:
         continue
     u = d.get("cachedUsageUtilization")
-    if not u:
-        continue
-    home = os.path.dirname(os.path.dirname(p)) if ".claude-" in p else os.path.expanduser("~")
+    # A second account under CLAUDE_CONFIG_DIR keeps config and credentials
+    # together; the default keeps the config at ~/.claude.json and the
+    # credentials in ~/.claude/. cred_path handles both.
+    home = os.path.dirname(p)
+    # The cache is only a fallback, so its absence is not a reason to skip the
+    # account: a signed-in account with no cache still answers the live API,
+    # and skipping it drops the account off the strip entirely.
     fresh = live_usage(home)
+    if not fresh and not u:
+        continue
+    u = u or {}
     out.append({
         "email": (d.get("oauthAccount") or {}).get("emailAddress"),
         "tier": (d.get("oauthAccount") or {}).get("organizationRateLimitTier"),
