@@ -25,6 +25,7 @@ PrimaryLayerKeys = [
     { Text = "delta", Action = [ "LeftMeta", "LeftShift", "S" ] , Color = "green", Badge = "delta" },
     { Text = "epsilon",   Action = [ "LeftMeta", "LeftShift", "H" ] , Color = "red", Badge = "epsilon" },
     { Text = "zeta",  Action = [ "LeftMeta", "LeftShift", "L" ] , Color = "teal", Badge = "zeta" },
+    { Text = "lambda", Action = [ "LeftMeta", "LeftShift", "E" ], Color = "yellow", Badge = "lambda" },
     # Commits you authored across one host's repos: today, this week, this
     # month, written by `gitcommits` on a timer. Tapping it sends SUPER+SHIFT+G,
     # which the Hyprland config binds to the by-hour overlay.
