@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh OpenCode Go spend for the Touch Bar
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Absolute paths and an explicit PATH: a user unit gets a minimal environment,
+# and ocspend shells out to ssh.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Host, provider and the published caps; optional -- see bin/ocspend.
+EnvironmentFile=-%h/.config/agentic-laptop/ocspend.env
+ExecStart=%h/.local/bin/ocspend --toml /var/lib/claude-limits/ocspend.toml
+# The remote read can hang on a sleeping node; never let it pile up.
+TimeoutStartSec=90

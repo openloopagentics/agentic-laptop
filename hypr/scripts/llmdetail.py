@@ -39,6 +39,17 @@ WINDOWS = [
     ("weekly_scoped", "Weekly · scoped"),
 ]
 
+# An account can relabel the windows it reports. The Go plan's caps are
+# 5-hourly, weekly and monthly, so reusing Claude's names would mislabel the
+# third row as weekly while it shows thirty days.
+WINDOW_LABELS = {
+    "opencode-go": {
+        "session": "5-hour cap",
+        "weekly_all": "Weekly cap",
+        "weekly_scoped": "Monthly cap",
+    },
+}
+
 TIERS = {
     "default_claude_max_20x": "Claude Max 20×",
     "default_claude_max_5x": "Claude Max 5×",
@@ -200,13 +211,53 @@ def draw_breakdown(c, bd, y):
         x += 15 + c.text_extents(label).x_advance + 26
 
 
+OCSPEND = "/var/lib/claude-limits/ocspend.toml"
+
+
+def load_ocspend():
+    """The Go plan has no usage API, so its bars are spend against the
+    published caps. Same three windows, a different quantity -- say so."""
+    try:
+        with open(OCSPEND) as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    pct, spent = {}, None
+    for line in text.splitlines():
+        key, _, rest = line.partition("=")
+        key = key.strip()
+        if key in ("session", "weekly_all", "weekly_scoped"):
+            try:
+                pct[key] = float(rest.strip())
+            except ValueError:
+                pass
+        elif line.startswith("# spent:"):
+            spent = line[len("# spent:"):].strip()
+    if not pct:
+        return None
+    return {
+        "email": "opencode-go",
+        "host": "node",
+        "live": True,
+        "tier": "OpenCode Go",
+        "note": spent,
+        "rings": {k: {"percent": pct.get(k, 0.0), "resets_at": None,
+                      "severity": None, "model": None}
+                  for k in ("session", "weekly_all", "weekly_scoped")},
+    }
+
+
 def load():
     try:
         with open(DATA) as fh:
             data = json.load(fh)
     except (OSError, ValueError):
-        return [], 0
-    return data.get("accounts", []), data.get("updated", 0)
+        data = {}
+    accounts = list(data.get("accounts", []))
+    go = load_ocspend()
+    if go:
+        accounts.append(go)
+    return accounts, data.get("updated", 0)
 
 
 def draw(c, accounts, idx, updated=0):
@@ -299,9 +350,9 @@ def draw(c, accounts, idx, updated=0):
         rounded(c, 40, y, W - 80, row_h - 18, 12)
         c.fill()
 
-        label = title
+        label = WINDOW_LABELS.get(a.get("email"), {}).get(key, title)
         model = r.get("model")
-        if key == "weekly_scoped" and model:
+        if key == "weekly_scoped" and model and a.get("email") not in WINDOW_LABELS:
             label = f"Weekly · {model}"
         c.set_source_rgb(*TEXT)
         c.set_font_size(17)
@@ -329,6 +380,8 @@ def draw(c, accounts, idx, updated=0):
 
         # Everything else known about the window, spelled out.
         detail = []
+        if a.get("note") and key == "session":
+            detail.append(a["note"])
         if known:
             detail.append(f"{100 - min(pct, 100):.0f}% headroom")
         sev = r.get("severity")

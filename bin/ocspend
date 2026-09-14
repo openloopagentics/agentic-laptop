@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Spend on the OpenCode Go plan, against its published caps.
+#
+# The Go plan has no usage API -- an endpoint for it is still an open feature
+# request upstream -- so this sums what opencode itself recorded: every
+# assistant message carries a dollar `cost`, a `providerID` and a creation
+# time, in opencode's own SQLite database on the node.
+#
+# That means the figures are what THIS machine's opencode did. Anything run
+# elsewhere, or spent outside opencode, is invisible to it. The caps are
+# rolling windows, not calendar ones, so the sums are taken from now backwards.
+set -uo pipefail
+
+HOST=${OCSPEND_HOST:-$(head -n1 "$HOME/.config/claude-badged/fleet" 2>/dev/null || true)}
+PROVIDER=${OCSPEND_PROVIDER:-opencode-go}
+# Published caps, in dollars: 5-hourly, weekly, monthly.
+CAP_5H=${OCSPEND_CAP_5H:-12}
+CAP_WEEK=${OCSPEND_CAP_WEEK:-30}
+CAP_MONTH=${OCSPEND_CAP_MONTH:-60}
+OUT=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --toml) OUT="$2"; shift 2 ;;
+        --host) HOST="$2"; shift 2 ;;
+        *) echo "usage: ocspend [--toml PATH] [--host HOST]" >&2; exit 2 ;;
+    esac
+done
+[ -n "$HOST" ] || { echo "ocspend: no host -- set OCSPEND_HOST" >&2; exit 2; }
+
+read -r -d '' READER <<'PY' || true
+import json, os, sqlite3, sys, time
+
+provider = sys.argv[1]
+db = os.path.expanduser("~/.local/share/opencode/opencode.db")
+now = time.time() * 1000                     # opencode stores epoch milliseconds
+windows = {"session": 5 * 3600e3, "weekly_all": 7 * 86400e3, "weekly_scoped": 30 * 86400e3}
+spend = dict.fromkeys(windows, 0.0)
+total = 0.0
+
+try:
+    c = sqlite3.connect("file:%s?mode=ro" % db, uri=True)
+    # `part` repeats each message's cost, so summing both would double-count.
+    rows = c.execute("select time_created, data from message "
+                     "where time_created > ?", (now - 31 * 86400e3,))
+    for created, data in rows:
+        try:
+            j = json.loads(data)
+        except Exception:
+            continue
+        if not isinstance(j, dict) or j.get("providerID") != provider:
+            continue
+        cost = float(j.get("cost") or 0)
+        total += cost
+        for name, span in windows.items():
+            if now - created <= span:
+                spend[name] += cost
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+    raise SystemExit(0)
+
+print(json.dumps({"spend": spend, "total_30d": total}))
+PY
+
+raw=$(timeout 60 ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" \
+        "python3 - '$PROVIDER'" <<<"$READER" 2>/dev/null)
+[ -n "$raw" ] || { echo "ocspend: no reading from $HOST" >&2; exit 1; }
+
+body=$(CAP_5H=$CAP_5H CAP_WEEK=$CAP_WEEK CAP_MONTH=$CAP_MONTH \
+       HOST_LABEL=${OCSPEND_HOST_LABEL:-$HOST} RAW="$raw" python3 <<'FMT'
+import json, os, sys
+
+d = json.loads(os.environ["RAW"])
+if "error" in d:
+    sys.exit("ocspend: " + d["error"])
+s = d["spend"]
+caps = {"session": float(os.environ["CAP_5H"]),
+        "weekly_all": float(os.environ["CAP_WEEK"]),
+        "weekly_scoped": float(os.environ["CAP_MONTH"])}
+out = ["[[account]]",
+       'email = "opencode-go"',
+       'host = "%s"' % os.environ["HOST_LABEL"],
+       "live = true",
+       "age_min = 0"]
+for k in ("session", "weekly_all", "weekly_scoped"):
+    pct = min(100.0, 100.0 * s[k] / caps[k]) if caps[k] else 0.0
+    out.append("%s = %.1f" % (k, pct))
+out.append("# spent: 5h $%.2f/$%.0f | week $%.2f/$%.0f | month $%.2f/$%.0f"
+           % (s["session"], caps["session"], s["weekly_all"], caps["weekly_all"],
+              s["weekly_scoped"], caps["weekly_scoped"]))
+out.append("# total recorded over 30d: $%.2f" % d["total_30d"])
+print("\n".join(out))
+FMT
+) || exit 1
+
+if [ -n "$OUT" ]; then
+    tmp=$(mktemp "${OUT}.XXXXXX") || exit 1
+    printf '%s\n' "$body" > "$tmp"
+    chmod 644 "$tmp"
+    mv -f "$tmp" "$OUT"
+else
+    printf '%s\n' "$body"
+fi

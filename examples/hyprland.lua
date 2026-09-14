@@ -560,6 +560,7 @@ local llmdetail = "$HOME/.config/hypr/scripts/llmdetail.py "
 hl.bind(mainMod .. " + SHIFT + U", hl.dsp.exec_cmd(llmdetail .. "you@example.com"),   { description = "Usage: first account" })
 hl.bind(mainMod .. " + SHIFT + I", hl.dsp.exec_cmd(llmdetail .. "other@example.com"), { description = "Usage: second account" })
 hl.bind(mainMod .. " + SHIFT + M", hl.dsp.exec_cmd(llmdetail .. "codex"),             { description = "Usage: codex" })
+hl.bind(mainMod .. " + SHIFT + W", hl.dsp.exec_cmd(llmdetail .. "opencode-go"),      { description = "Usage: opencode-go" })
 
 -- Cycle windows on the active workspace
 hl.bind("ALT + Tab", function()

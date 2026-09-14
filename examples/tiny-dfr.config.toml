@@ -39,7 +39,8 @@ PrimaryLayerKeys = [
     # /etc/tiny-dfr/<name>.svg and add Logo = "<name>"; none ship with this repo.
     { Widget = "bars", Source = "file", Path = "/var/lib/claude-limits/limits.toml", Account = "you@example.com", Action = [ "LeftMeta", "LeftShift", "U" ], Text = "c1" },
     { Widget = "bars", Source = "file", Path = "/var/lib/claude-limits/limits.toml", Account = "other@example.com", Action = [ "LeftMeta", "LeftShift", "I" ], Text = "c2" },
-    { Widget = "bars", Source = "file", Path = "/var/lib/claude-limits/limits.toml", Account = "codex", Action = [ "LeftMeta", "LeftShift", "M" ], Text = "cx" }
+    { Widget = "bars", Source = "file", Path = "/var/lib/claude-limits/limits.toml", Account = "codex", Action = [ "LeftMeta", "LeftShift", "M" ], Text = "cx" },
+    { Widget = "bars", Source = "file", Path = "/var/lib/claude-limits/ocspend.toml", Account = "opencode-go", Action = [ "LeftMeta", "LeftShift", "W" ], Text = "oc" }
 ]
 
 # Named colours, referenced by the Color/Background/ActiveBackground keys above.
