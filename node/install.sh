@@ -66,10 +66,19 @@ d = json.loads(p.read_text()) if p.exists() else {}
 if p.exists():
     shutil.copy2(p, f"{p}.bak-agentic-{int(time.time())}")
 hooks = d.setdefault("hooks", {})
-for event, state in (("Notification", "ask"), ("Stop", "done"),
-                     ("UserPromptSubmit", "busy")):
+# SubagentStop is deliberately absent: it fires per subagent, and writing
+# `done` there would clear the parent's badge while the parent is still going.
+# Stop passes through `stop` so the hook can read its own payload.
+for event, state in (("Notification", "ask"), ("Stop", "stop"),
+                     ("UserPromptSubmit", "busy"), ("SubagentStart", "busy")):
     cmd = f"{badge} {state}"
     groups = hooks.setdefault(event, [])
+    # Drop any earlier agentic-badge command for this event before appending.
+    # Matching on the exact string alone leaves a stale entry behind whenever
+    # the argument changes, and the old one still fires.
+    for g in groups:
+        g["hooks"] = [h for h in g.get("hooks", [])
+                      if badge not in (h.get("command") or "") or h.get("command") == cmd]
     already = any(h.get("command") == cmd for g in groups for h in g.get("hooks", []))
     if already:
         continue

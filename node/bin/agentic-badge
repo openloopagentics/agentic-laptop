@@ -7,8 +7,26 @@
 #
 # usage: agentic-badge ask|done
 set -uo pipefail
-state=${1:?usage: agentic-badge ask|busy|done}
+state=${1:?usage: agentic-badge ask|busy|done|stop}
 conf="$HOME/.agentic/config"
+
+# `stop` resolves itself from the hook payload on stdin. Claude Code fires
+# Stop when the main loop ends, but background shells, subagents and monitors
+# carry on -- and the payload lists them. Reporting `done` then is a lie the
+# strip has been telling: the workspace looks finished while work continues.
+if [ "$state" = stop ]; then
+    state=$(python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("done"); raise SystemExit          # unreadable payload: old behaviour
+tasks = d.get("background_tasks") or []
+live = [t for t in tasks if str(t.get("status", "")).lower() not in ("completed", "failed", "cancelled")]
+print("busy" if live else "done")
+' 2>/dev/null) || state=done
+    [ -n "$state" ] || state=done
+fi
 
 session=$(tmux display-message -p "#S" 2>/dev/null) || exit 0
 [ -n "$session" ] || exit 0
