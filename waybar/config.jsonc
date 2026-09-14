@@ -73,6 +73,13 @@
     },
 
     "clock": {
+        // Waybar 0.15 renders America/Vancouver an hour behind the system
+        // clock during DST -- /etc/localtime is correct, tzdata is current,
+        // and glibc agrees, so it is waybar's own DST handling. A fixed
+        // offset renders correctly, so pin one.
+        // NOTE: this does not fall back. Change to Etc/GMT+8 at the 1 Nov
+        // transition, or drop this key if waybar is fixed upstream.
+        "timezone": "Etc/GMT+7",
         "format": "{:%a %d %b  %H:%M}",
         "tooltip-format": "<tt><small>{calendar}</small></tt>",
         "calendar": {
