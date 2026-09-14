@@ -81,6 +81,22 @@ p.write_text(json.dumps(d, indent=2) + "\n")
 print("  claude hooks: ok")
 PY
 
+# --- opencode plugin: drop in beside whatever is already there ---------------
+# Global plugins load from ~/.config/opencode/plugins/*.js with no config edit,
+# so the `plugin` array in opencode.json -- which may already carry npm
+# plugins -- is left alone.
+OC_PLUGINS="$HOME/.config/opencode/plugins"
+if [ -d "$HOME/.config/opencode" ]; then
+    mkdir -p "$OC_PLUGINS"
+    # The directory needs to be an ES module for `import` to work; only write
+    # a package.json if nobody else has.
+    [ -f "$OC_PLUGINS/package.json" ] || printf '{ "type": "module" }\n' > "$OC_PLUGINS/package.json"
+    cp "$AG/bin/agentic-badge.js" "$OC_PLUGINS/agentic-badge.js"
+    echo "  opencode plugin: ok"
+else
+    echo "  opencode plugin: skipped (opencode not configured here)"
+fi
+
 # --- codex notify: chain, never replace -------------------------------------
 if [ -d "$HOME/.codex" ]; then
 python3 - "$AG/bin/agentic-badge" <<'PY'
