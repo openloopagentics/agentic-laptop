@@ -55,7 +55,7 @@ def load():
         with open(DATA) as fh:
             data = json.load(fh)
     except (OSError, ValueError):
-        return [], [], 0, []
+        return [], [], 0, [], None
     hosts = data.get("hosts", {})
     names = list(hosts)
     months = {}
@@ -74,7 +74,7 @@ def load():
             m["total"] += v["cost"]
     ordered = [months[k] for k in sorted(months) if months[k]["total"] > 0]
     failed = [n for n, h in hosts.items() if not h.get("ok")]
-    return ordered, names, data.get("updated", 0), failed
+    return ordered, names, data.get("updated", 0), failed, data.get("claude_complete_from")
 
 
 def rounded(c, x, y, w, h, r):
@@ -89,7 +89,7 @@ def rounded(c, x, y, w, h, r):
     c.close_path()
 
 
-def draw(c, months, names, idx, updated=0, failed=()):
+def draw(c, months, names, idx, updated=0, failed=(), complete_from=None):
     """Draw one month. Returns {"prev": rect, "next": rect} for hit-testing,
     with a rect of None where that direction is not available."""
     c.set_source_rgb(*BASE)
@@ -134,6 +134,14 @@ def draw(c, months, names, idx, updated=0, failed=()):
         warn.append(f"stale: {int(age)} min old")
     if failed:
         warn.append("no data from " + ", ".join(failed))
+    # Claude Code deleted transcripts after 30 days until retention was
+    # raised, so anything before the first gather's cutoff undercounts it.
+    if complete_from and m["month"] <= complete_from[:7]:
+        cut = datetime.strptime(complete_from, "%Y-%m-%d")
+        if m["month"] < complete_from[:7]:
+            warn.append("Claude Code usage missing: transcripts were deleted")
+        elif cut.day > 1:
+            warn.append(f"Claude Code usage missing before {month_name[cut.month][:3]} {cut.day}")
     if warn:
         c.set_source_rgb(*PEACH)
         text = " · ".join(warn)
@@ -280,13 +288,13 @@ def main():
     if "--png" in sys.argv:
         import cairo
 
-        months, names, updated, failed = load()
+        months, names, updated, failed, complete_from = load()
         idx = len(months) - 1
         if "--month" in sys.argv:
             want = sys.argv[sys.argv.index("--month") + 1]
             idx = next((i for i, m in enumerate(months) if m["month"] == want), idx)
         surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, W, H)
-        draw(cairo.Context(surf), months, names, max(idx, 0), updated, failed)
+        draw(cairo.Context(surf), months, names, max(idx, 0), updated, failed, complete_from)
         surf.write_to_png(sys.argv[sys.argv.index("--png") + 1])
         return 0
 
@@ -318,7 +326,7 @@ def main():
     with open(PIDFILE, "w") as fh:
         fh.write(str(os.getpid()))
 
-    months, names, updated, failed = load()
+    months, names, updated, failed, complete_from = load()
     state = {"idx": max(len(months) - 1, 0), "hits": {"prev": None, "next": None}}
 
     def on_activate(app):
@@ -332,7 +340,7 @@ def main():
         area.set_content_height(H)
 
         def on_draw(_a, c, _w, _h):
-            state["hits"] = draw(c, months, names, state["idx"], updated, failed)
+            state["hits"] = draw(c, months, names, state["idx"], updated, failed, complete_from)
 
         area.set_draw_func(on_draw)
         win.set_child(area)

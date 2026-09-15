@@ -97,6 +97,10 @@ for p in targets:
           groups[-1].setdefault("hooks", []).append({"type": "command", "command": cmd})
       else:
           groups.append({"hooks": [{"type": "command", "command": cmd}]})
+  # Claude Code deletes transcripts older than 30 days by default, and with
+  # them the only record ccusage can price. Keep them unless the user has
+  # already chosen a period.
+  d.setdefault("cleanupPeriodDays", 3650)
   p.write_text(json.dumps(d, indent=2) + "\n")
 print("  claude hooks: ok")
 PY

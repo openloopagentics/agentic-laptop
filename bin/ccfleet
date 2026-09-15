@@ -89,6 +89,14 @@ def reduce_day(row):
     }
 
 
+def load_previous(path):
+    """The last run's JSON, or an empty one."""
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
 def main():
     args = sys.argv[1:]
     outs = {}
@@ -102,15 +110,27 @@ def main():
         args = fleet.read_text().split() if fleet.exists() else []
 
     tz, since = local_tz(), since_date()
+    last = load_previous(outs.get("--json"))
+    previous = {h: v.get("days", {}) for h, v in last.get("hosts", {}).items()}
+    # Before the first gather, Claude Code's 30-day cleanup had already run:
+    # nothing older than that is complete, and the overlay says so.
+    complete_from = last.get("claude_complete_from") or (
+        date.today() - timedelta(days=30)).isoformat()
     hosts = {}
     for h in ["local"] + args:
         rows, err = run_host(h, tz, since)
         name = h.split("@", 1)[-1]
-        hosts[name] = {
-            "ok": err is None,
-            "error": err,
-            "days": {r["period"]: reduce_day(r) for r in rows if r.get("period")},
-        }
+        days = dict(previous.get(name, {}))
+        for r in rows:
+            if not r.get("period"):
+                continue
+            day = reduce_day(r)
+            # Claude Code deletes transcripts after cleanupPeriodDays, and
+            # ccusage can only count what is still on disk -- so a past day
+            # only ever grows. Whatever was seen once is kept.
+            if day["cost"] >= days.get(r["period"], {}).get("cost", 0):
+                days[r["period"]] = day
+        hosts[name] = {"ok": err is None, "error": err, "days": days}
 
     today = date.today()
     week_start = today - timedelta(days=today.weekday())
@@ -129,7 +149,8 @@ def main():
     if "--json" in outs:
         p = outs["--json"]
         tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"updated": now, "timezone": tz, "hosts": hosts}))
+        tmp.write_text(json.dumps({"updated": now, "timezone": tz,
+                                   "claude_complete_from": complete_from, "hosts": hosts}))
         tmp.chmod(0o644)
         tmp.replace(p)
     if "--toml" in outs:
