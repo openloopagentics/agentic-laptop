@@ -129,6 +129,10 @@ run sudo install -d -o "$USER" -m 755 /var/lib/claude-limits
 
 # uinput, so bar buttons reach Hyprland's keybinds. Wanted either way: the
 # on-screen bar also serves a Touch Bar machine on double-tap Ctrl.
+# The module is not loaded by default everywhere (CachyOS): /dev/uinput then
+# exists as a static node but opening it fails with "no such device".
+run sudo modprobe uinput
+echo uinput | run sudo tee /etc/modules-load.d/uinput.conf >/dev/null
 run sudo groupadd -f uinput
 run sudo install -m644 "$DIR/config/99-uinput.rules" /etc/udev/rules.d/99-uinput.rules
 run sudo udevadm control --reload-rules
