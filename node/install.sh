@@ -75,12 +75,13 @@ for p in targets:
   # SubagentStop is deliberately absent: it fires per subagent, and writing
   # `done` there would clear the parent's badge while the parent is still going.
   # Stop passes through `stop` so the hook can read its own payload.
-  # PostToolUse marks work resumed after you answer a prompt: answering fires no
-  # UserPromptSubmit, so without it the badge stays on `ask` while the agent
-  # works. agentic-badge throttles it, so a tool storm is one log line.
+  # Tool events mark work resumed after you answer a prompt: answering fires no
+  # UserPromptSubmit, so without them the badge stays on `ask` while the agent
+  # works. PreToolUse covers a long command, which fires no PostToolUse until
+  # it ends. agentic-badge throttles both, so a tool storm is one log line.
   for event, state in (("Notification", "ask"), ("Stop", "stop"),
                        ("UserPromptSubmit", "busy"), ("SubagentStart", "busy"),
-                       ("PostToolUse", "busy")):
+                       ("PreToolUse", "busy"), ("PostToolUse", "busy")):
       cmd = f"{badge} {state}"
       groups = hooks.setdefault(event, [])
       # Drop any earlier agentic-badge command for this event before appending.
