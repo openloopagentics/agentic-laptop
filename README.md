@@ -330,6 +330,18 @@ runs with `PrivateTmp`, so it cannot read a user's home directory or
 
 ## Install
 
+On a fresh Arch-based machine with Hyprland (Arch, CachyOS, Asahi), one command
+does all of it -- packages, checkout, the root-owned pieces, and either the
+tiny-dfr fork (Touch Bar found) or the on-screen bar (none found):
+
+    curl -fsSL https://raw.githubusercontent.com/openloopagentics/agentic-laptop/main/setup.sh | bash
+
+Add `-s -- --from <host>` to copy your personal config (`local/`, the fleet
+list, push settings) from a machine that already has it, or `--dry-run` to see
+what it would do. It is safe to re-run.
+
+By hand, from a checkout:
+
     ./install.sh          # symlinks user files, enables the timers
                           # then run the root commands it prints
     agentic-fleet install <host>      # for each machine that runs agents
