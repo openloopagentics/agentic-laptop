@@ -168,10 +168,13 @@ def push_node(host, cfg):
 
 
 def remember(hosts):
-    known = set(FLEET.read_text().split()) if FLEET.exists() else set()
-    known |= set(hosts)
+    # Order matters: the first line is the default remote for `r`,
+    # `gitcommits` and `ocspend`. New nodes go on the end, so adding one never
+    # silently changes where your sessions open.
+    known = FLEET.read_text().split() if FLEET.exists() else []
+    known += [h for h in hosts if h not in known]
     FLEET.parent.mkdir(parents=True, exist_ok=True)
-    FLEET.write_text("\n".join(sorted(known)) + "\n")
+    FLEET.write_text("\n".join(known) + "\n")
 
 
 def cmd_install(args):
