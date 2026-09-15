@@ -3,15 +3,16 @@
 # Hyprland (Arch, CachyOS, Asahi ALARM).
 #
 #   curl -fsSL https://raw.githubusercontent.com/openloopagentics/agentic-laptop/main/setup.sh | bash
-#   curl -fsSL .../setup.sh | bash -s -- --from <host>
 #
 # It does everything install.sh only prints: packages, the repo checkout, the
 # root-owned pieces, and -- on a machine with a Touch Bar -- the tiny-dfr fork
 # built and switched in. A machine without one gets the on-screen bar instead.
 #
+# Personal config -- local/, ~/.config/claude-badged/, ~/.config/agentic-laptop/
+# -- is not in git. Put it in place before or after; a local/ already sitting
+# in the checkout directory is kept.
+#
 # Options:
-#   --from HOST      copy your personal config (local/, the fleet list, push
-#                    settings, env files) from a machine that already has it
 #   --dir DIR        where to check the repo out (default ~/src/agentic-laptop)
 #   --repo URL       repo to clone (default the public one)
 #   --no-packages    skip pacman
@@ -25,14 +26,12 @@ REPO_URL=https://github.com/openloopagentics/agentic-laptop.git
 FORK_URL=https://github.com/openloopagentics/tiny-dfr.git
 FORK_BRANCH=agentic-laptop
 DIR="$HOME/src/agentic-laptop"
-FROM=""
 PACKAGES=1
 TOUCHBAR=auto
 DRY=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --from)        FROM=${2:?--from needs a host}; shift ;;
         --dir)         DIR=${2:?--dir needs a path}; shift ;;
         --repo)        REPO_URL=${2:?--repo needs a url}; shift ;;
         --no-packages) PACKAGES=0 ;;
@@ -91,7 +90,7 @@ if command -v Hyprland >/dev/null; then
     fi
 fi
 
-# The tailnet first: --from, and every node, are reached over it.
+# The tailnet first: every node is reached over it.
 say tailscale
 run sudo systemctl enable --now tailscaled
 if [ "$DRY" = 0 ] && ! tailscale status >/dev/null 2>&1; then
@@ -103,27 +102,17 @@ fi
 say repo
 if [ -d "$DIR/.git" ]; then
     run git -C "$DIR" pull --ff-only
+elif [ -d "$DIR" ]; then
+    # Config copied in ahead of the checkout: clone beside it and move the
+    # history in. local/ is git-ignored, so the checkout leaves it alone.
+    tmp=$(mktemp -d)
+    run git clone -q --no-checkout "$REPO_URL" "$tmp/repo"
+    run mv "$tmp/repo/.git" "$DIR/.git"
+    run git -C "$DIR" checkout -q -f HEAD
+    run rm -rf "$tmp"
 else
     run mkdir -p "$(dirname "$DIR")"
-    run git clone "$REPO_URL" "$DIR"
-fi
-
-# --- personal config from another machine ----------------------------------
-# None of this is in git: local/ holds real project names and accounts, the
-# fleet file holds hostnames, push.conf holds the ntfy topic.
-if [ -n "$FROM" ]; then
-    say "config from $FROM"
-    # Relative to the remote home, which scp resolves without needing ~.
-    remote_dir=${DIR#"$HOME"/}
-    run mkdir -p "$DIR/local" "$HOME/.config/claude-badged" "$HOME/.config/agentic-laptop"
-    # One shared connection, so a password is asked for once, not per file.
-    mux="-o ControlMaster=auto -o ControlPath=/tmp/agentic-setup-%C -o ControlPersist=60"
-    scp() { command scp $mux "$@"; }
-    run scp -rq "$FROM:$remote_dir/local/." "$DIR/local/"
-    for f in fleet push.conf; do
-        run scp -q "$FROM:.config/claude-badged/$f" "$HOME/.config/claude-badged/$f" || note "no $f on $FROM"
-    done
-    run scp -q "$FROM:.config/agentic-laptop/*.env" "$HOME/.config/agentic-laptop/" 2>/dev/null || true
+    run git clone -q "$REPO_URL" "$DIR"
 fi
 
 # --- link everything -------------------------------------------------------
@@ -177,6 +166,6 @@ fi
 # --- what is left ----------------------------------------------------------
 say done
 [ -s "$HOME/.config/claude-badged/fleet" ] || note "add machines that run agents:  agentic-fleet install <host>"
-[ -d "$DIR/local" ] || note "your own projects and accounts: copy examples/ to local/ and edit, or re-run with --from <host>"
+[ -d "$DIR/local" ] || note "your own projects and accounts: copy examples/ to local/ and edit, then re-run"
 [ "$relogin" = 0 ] || note "log out and back in, so the uinput group applies"
 note "check the whole chain any time:  agentic-doctor"

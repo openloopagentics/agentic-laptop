@@ -336,9 +336,10 @@ tiny-dfr fork (Touch Bar found) or the on-screen bar (none found):
 
     curl -fsSL https://raw.githubusercontent.com/openloopagentics/agentic-laptop/main/setup.sh | bash
 
-Add `-s -- --from <host>` to copy your personal config (`local/`, the fleet
-list, push settings) from a machine that already has it, or `--dry-run` to see
-what it would do. It is safe to re-run.
+Your personal config is not in git: `local/`, `~/.config/claude-badged/` and
+`~/.config/agentic-laptop/`. Copy them over before running it (a `local/`
+already in the checkout directory is kept) or after, then re-run. Add
+`-s -- --dry-run` to see what it would do. It is safe to re-run.
 
 By hand, from a checkout:
 
