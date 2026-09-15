@@ -1,0 +1,91 @@
+From b4e48fd050e89ea2eb333a5d269d29714099ce2b Mon Sep 17 00:00:00 2001
+From: Ravikant Cherukuri <ravi@openloopagentics.com>
+Date: Mon, 14 Sep 2026 22:29:52 -0700
+Subject: [PATCH] Fit a commits widget's figures to their columns; spend shows
+ two
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ src/widget.rs | 53 ++++++++++++++++++++++++++++++++++-----------------
+ 1 file changed, 35 insertions(+), 18 deletions(-)
+
+diff --git a/src/widget.rs b/src/widget.rs
+index e961c6e..1e45d4a 100644
+--- a/src/widget.rs
++++ b/src/widget.rs
+@@ -506,7 +506,6 @@ impl Widget {
+         color: Rgb,
+     ) {
+         let h = top - bot;
+-        let col = width / 3.0;
+         // Recency carries the emphasis: today is full strength, the longer
+         // windows sit back, so the eye lands on the figure that changes.
+         const WEIGHT: [f64; 3] = [1.0, 0.72, 0.5];
+@@ -521,29 +520,47 @@ impl Widget {
+         let num_y = bot + h * 0.52;
+         let tag_y = bot + h * 0.86;
+ 
+-        // A `Text` on a commits widget prefixes each figure -- "$" turns the
+-        // same three columns into spend -- and compacts four digits and up so
+-        // a month's total still fits its third of the button.
++        // A `Text` on a commits widget prefixes each figure -- "$" turns it
++        // into spend -- and compacts four digits and up. Money is wider than a
++        // count, so spend drops the week and keeps today and the month.
+         let prefix = self.label.as_deref().unwrap_or("");
+-        for i in 0..3 {
+-            let centre = left_edge + col * (i as f64 + 0.5);
+-            let n = self.counts[i];
+-            let label = if prefix.is_empty() {
+-                n.to_string()
+-            } else if n >= 10_000 {
+-                format!("{prefix}{}k", n / 1000)
+-            } else if n >= 1000 {
+-                format!("{prefix}{:.1}k", n as f64 / 1000.0)
+-            } else {
+-                format!("{prefix}{n}")
+-            };
++        let shown: &[usize] = if prefix.is_empty() { &[0, 1, 2] } else { &[0, 2] };
++        let col = width / shown.len() as f64;
++        let labels: Vec<String> = shown
++            .iter()
++            .map(|&i| {
++                let n = self.counts[i];
++                if prefix.is_empty() {
++                    n.to_string()
++                } else if n >= 10_000 {
++                    format!("{prefix}{}k", n / 1000)
++                } else if n >= 1000 {
++                    format!("{prefix}{:.1}k", n as f64 / 1000.0)
++                } else {
++                    format!("{prefix}{n}")
++                }
++            })
++            .collect();
++
++        // One size for every figure, shrunk until the widest fits its column
++        // with a gap either side: neighbours must never run into each other.
++        c.set_font_size(num_size);
++        let widest = labels
++            .iter()
++            .map(|l| c.text_extents(l).map(|e| e.x_advance()).unwrap_or(0.0))
++            .fold(0.0f64, f64::max);
++        let fit = if widest > 0.0 { (col * 0.84 / widest).min(1.0) } else { 1.0 };
++        let num_size = num_size * fit;
++
++        for (slot, (&i, label)) in shown.iter().zip(labels.iter()).enumerate() {
++            let centre = left_edge + col * (slot as f64 + 0.5);
+ 
+             c.set_font_size(num_size);
+-            let ext = c.text_extents(&label).unwrap();
++            let ext = c.text_extents(label).unwrap();
+             c.set_source_rgba(color.r, color.g, color.b, WEIGHT[i] * fade);
+             c.new_path();
+             c.move_to(centre - ext.width() / 2.0 - ext.x_bearing(), num_y);
+-            c.show_text(&label).unwrap();
++            c.show_text(label).unwrap();
+ 
+             c.set_font_size(tag_size);
+             let text = TAGS[i];
+-- 
+2.55.0
+

@@ -30,9 +30,9 @@ PrimaryLayerKeys = [
     # month, written by `gitcommits` on a timer. Tapping it sends SUPER+SHIFT+G,
     # which the Hyprland config binds to the by-hour overlay.
     { Widget = "commits", Source = "file", Path = "/var/lib/claude-limits/commits.toml", Action = [ "LeftMeta", "LeftShift", "G" ] },
-    # Agent spend across every machine, from ccusage: today, this week, this
-    # month, in dollars. The commits widget again -- Text = "$" prefixes the
-    # figures. Written by `ccfleet`; tapping it sends SUPER+SHIFT+Z, bound to
+    # Agent spend across every machine, from ccusage: today and this month,
+    # in dollars. The commits widget again -- Text = "$" prefixes the figures
+    # and drops the week, which money is too wide to fit. Written by `ccfleet`; tapping it sends SUPER+SHIFT+Z, bound to
     # the spend overlay.
     { Widget = "commits", Source = "file", Path = "/var/lib/claude-limits/ccusage.toml", Text = "$", Action = [ "LeftMeta", "LeftShift", "Z" ] },
     # SUPER+R toggles the clickable F1-F12 overlay on the main screen.

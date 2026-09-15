@@ -359,11 +359,20 @@ def draw_widget(c, b, x, y, w, h, colour):
     if kind == "commits":
         d = read_toml(b.get("Path", ""))
         prefix = str(b.get("Text") or "")
-        for i, (key, tag) in enumerate((("today", "d"), ("week", "w"), ("month", "m"))):
-            cx = x + w * (i + 0.5) / 3
-            weight = (1.0, 0.72, 0.5)[i]
-            centre_text(c, figure(int(d.get(key, 0) or 0), prefix),
-                        cx, y + h * 0.42, h * 0.40, colour, weight)
+        # Money is wider than a count: spend keeps today and the month only.
+        cols = [("today", "d", 1.0), ("week", "w", 0.72), ("month", "m", 0.5)]
+        if prefix:
+            cols = [cols[0], cols[2]]
+        labels = [figure(int(d.get(key, 0) or 0), prefix) for key, _, _ in cols]
+        col = w / len(cols)
+        # One size for all, shrunk until the widest fits its column.
+        size = h * 0.40
+        c.set_font_size(size)
+        widest = max(c.text_extents(l).x_advance for l in labels) or 1
+        size *= min(1.0, col * 0.84 / widest)
+        for i, ((_, tag, weight), label) in enumerate(zip(cols, labels)):
+            cx = x + col * (i + 0.5)
+            centre_text(c, label, cx, y + h * 0.42, size, colour, weight)
             centre_text(c, tag, cx, y + h * 0.78, h * 0.22, colour, weight * 0.55)
         return
     if kind == "bars":

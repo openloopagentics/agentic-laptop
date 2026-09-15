@@ -195,7 +195,7 @@ fixed layers:
 
 - `ccfleet` runs [ccusage](https://github.com/ryoppippi/ccusage) on this
   machine and every fleet node, over every Claude config directory each has,
-  and totals today, this week and this month in dollars for the Touch Bar.
+  and totals today and this month in dollars for the Touch Bar.
   It covers whatever ccusage detects -- Claude Code, Codex, OpenCode. Days are
   grouped in this machine's timezone. Refreshed every fifteen minutes.
 - Tap the figures for an overlay: the month's days stacked by machine, and
