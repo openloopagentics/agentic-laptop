@@ -1,0 +1,12 @@
+[Unit]
+Description=Gather ccusage spend from every machine for the Touch Bar
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Absolute paths and an explicit PATH: a user unit gets a minimal environment,
+# and ccfleet shells out to ssh and npx.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/ccfleet --toml /var/lib/claude-limits/ccusage.toml --json /var/lib/claude-limits/ccusage.json
+# ccusage takes seconds per machine, and a sleeping node can hang the read.
+TimeoutStartSec=600

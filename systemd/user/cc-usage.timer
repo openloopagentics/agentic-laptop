@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh agent spend every 15 minutes
+
+[Timer]
+OnStartupSec=90s
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

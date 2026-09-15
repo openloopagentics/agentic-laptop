@@ -340,16 +340,30 @@ def centre_text(c, text, cx, cy, size, rgb, alpha=1.0, max_w=None):
     c.show_text(text)
 
 
+def figure(n, prefix):
+    """As the strip draws it: a Text prefixes the figure ("$" for spend) and
+    compacts four digits and up; a bare count is left as it is."""
+    if not prefix:
+        return str(n)
+    if n >= 10_000:
+        return f"{prefix}{n // 1000}k"
+    if n >= 1000:
+        return f"{prefix}{n / 1000:.1f}k"
+    return f"{prefix}{n}"
+
+
 def draw_widget(c, b, x, y, w, h, colour):
     """The two widgets worth having away from the strip: usage bars, and the
     commit counts. Anything else falls back to its name."""
     kind = b.get("Widget")
     if kind == "commits":
         d = read_toml(b.get("Path", ""))
+        prefix = str(b.get("Text") or "")
         for i, (key, tag) in enumerate((("today", "d"), ("week", "w"), ("month", "m"))):
             cx = x + w * (i + 0.5) / 3
             weight = (1.0, 0.72, 0.5)[i]
-            centre_text(c, str(d.get(key, 0)), cx, y + h * 0.42, h * 0.40, colour, weight)
+            centre_text(c, figure(int(d.get(key, 0) or 0), prefix),
+                        cx, y + h * 0.42, h * 0.40, colour, weight)
             centre_text(c, tag, cx, y + h * 0.78, h * 0.22, colour, weight * 0.55)
         return
     if kind == "bars":

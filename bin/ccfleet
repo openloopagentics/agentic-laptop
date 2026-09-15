@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""What the agents cost, across every machine: ccusage, gathered.
+
+Runs `ccusage daily --json --by-agent` on this machine and on every fleet
+node, over every Claude config directory each one has (a CLAUDE_CONFIG_DIR
+account keeps its own transcripts), and writes two files:
+
+    --toml PATH   today / week / month in whole dollars, for the Touch Bar
+    --json PATH   per host, per day, split by model and by agent, for the
+                  detail overlay
+
+Every host groups days in this machine's timezone, so a day means the same
+thing whichever node did the work.
+
+    ccfleet                         # summary to stdout
+    ccfleet --toml F --json F [host ...]
+"""
+import base64
+import json
+import subprocess
+import sys
+import time
+from datetime import date, datetime, timedelta
+from pathlib import Path
+
+MONTHS_KEPT = 6
+
+# POSIX sh, run through `sh` on the far side: the login shell may be zsh,
+# where an unmatched glob is an error rather than a literal.
+REMOTE = r'''
+PATH="/opt/homebrew/bin:$HOME/.local/bin:/usr/local/bin:$PATH"
+dirs=""
+for d in "$HOME/.claude" "$HOME"/.claude-*; do
+    [ -d "$d/projects" ] && dirs="${dirs:+$dirs,}$d"
+done
+cd /tmp || exit 1
+CLAUDE_CONFIG_DIR="$dirs" npx -y ccusage@latest daily --json --by-agent \
+    --timezone "$TZNAME" --since "$SINCE" 2>/dev/null
+'''
+
+
+def local_tz():
+    try:
+        out = subprocess.run(["timedatectl", "show", "-p", "Timezone", "--value"],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+        if out:
+            return out
+    except Exception:
+        pass
+    link = Path("/etc/localtime").resolve()
+    return str(link).split("zoneinfo/", 1)[-1] if "zoneinfo/" in str(link) else "UTC"
+
+
+def since_date():
+    d = date.today().replace(day=1)
+    for _ in range(MONTHS_KEPT - 1):
+        d = (d - timedelta(days=1)).replace(day=1)
+    return d.strftime("%Y%m%d")
+
+
+def run_host(host, tz, since):
+    script = f"TZNAME='{tz}'; SINCE='{since}'\n" + REMOTE
+    payload = base64.b64encode(script.encode()).decode()
+    cmd = f"echo {payload} | base64 -d | sh"
+    argv = ["sh", "-c", cmd] if host == "local" else [
+        "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, cmd]
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=240)
+        return json.loads(r.stdout).get("daily", []), None
+    except subprocess.TimeoutExpired:
+        return [], "timed out"
+    except ValueError:
+        tail = (r.stderr or "").strip().splitlines()
+        return [], tail[-1][:80] if tail else "no output"
+
+
+def reduce_day(row):
+    """Keep what the overlay draws; ccusage's token split stays behind."""
+    models, agents = {}, {}
+    for m in row.get("modelBreakdowns") or []:
+        models[m["modelName"]] = models.get(m["modelName"], 0) + (m.get("cost") or 0)
+    for a in row.get("agents") or []:
+        agents[a["agent"]] = agents.get(a["agent"], 0) + (a.get("totalCost") or 0)
+    return {
+        "cost": row.get("totalCost") or 0,
+        "tokens": row.get("totalTokens") or 0,
+        "models": models,
+        "agents": agents,
+    }
+
+
+def main():
+    args = sys.argv[1:]
+    outs = {}
+    for flag in ("--toml", "--json"):
+        if flag in args:
+            i = args.index(flag)
+            outs[flag] = Path(args[i + 1])
+            args = args[:i] + args[i + 2:]
+    if not args:
+        fleet = Path.home() / ".config/claude-badged/fleet"
+        args = fleet.read_text().split() if fleet.exists() else []
+
+    tz, since = local_tz(), since_date()
+    hosts = {}
+    for h in ["local"] + args:
+        rows, err = run_host(h, tz, since)
+        name = h.split("@", 1)[-1]
+        hosts[name] = {
+            "ok": err is None,
+            "error": err,
+            "days": {r["period"]: reduce_day(r) for r in rows if r.get("period")},
+        }
+
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())
+    totals = {"today": 0.0, "week": 0.0, "month": 0.0}
+    for h in hosts.values():
+        for day, v in h["days"].items():
+            d = datetime.strptime(day, "%Y-%m-%d").date()
+            if d == today:
+                totals["today"] += v["cost"]
+            if d >= week_start:
+                totals["week"] += v["cost"]
+            if (d.year, d.month) == (today.year, today.month):
+                totals["month"] += v["cost"]
+
+    now = int(time.time())
+    if "--json" in outs:
+        p = outs["--json"]
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"updated": now, "timezone": tz, "hosts": hosts}))
+        tmp.chmod(0o644)
+        tmp.replace(p)
+    if "--toml" in outs:
+        # The commits widget's shape, so the daemon reads dollars the way it
+        # reads commit counts.
+        p = outs["--toml"]
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text("".join(f"{k} = {round(v)}\n" for k, v in totals.items())
+                       + f"updated = {now}\n")
+        tmp.chmod(0o644)          # tiny-dfr reads this as `nobody`
+        tmp.replace(p)
+    if not outs:
+        for name, h in hosts.items():
+            state = "ok" if h["ok"] else h["error"]
+            month = sum(v["cost"] for d, v in h["days"].items()
+                        if d.startswith(today.strftime("%Y-%m")))
+            print(f"{name:12} ${month:9.2f} this month  ({state})")
+        print(f"{'total':12} ${totals['month']:9.2f} this month, "
+              f"${totals['week']:.2f} this week, ${totals['today']:.2f} today")
+
+
+if __name__ == "__main__":
+    main()

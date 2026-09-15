@@ -191,6 +191,17 @@ fixed layers:
   still shows its shape; colour is scaled across all months, so paging says
   something true about size.
 
+**Spend**
+
+- `ccfleet` runs [ccusage](https://github.com/ryoppippi/ccusage) on this
+  machine and every fleet node, over every Claude config directory each has,
+  and totals today, this week and this month in dollars for the Touch Bar.
+  It covers whatever ccusage detects -- Claude Code, Codex, OpenCode. Days are
+  grouped in this machine's timezone. Refreshed every fifteen minutes.
+- Tap the figures for an overlay: the month's days stacked by machine, and
+  the month split by machine, model and agent. `‹ ›` pages back six months.
+  Figures are ccusage's API list-price estimates, not what a subscription bills.
+
 **Knowing it still works**
 
 - `agentic-doctor` checks the whole chain, not just that things are installed:
@@ -223,6 +234,8 @@ fixed layers:
 | `bin/claude-badged` | Streams remote agent events + Hyprland focus into a badge file |
 | `bin/gitcommits` | Counts your commits on a remote host, for the Touch Bar and the by-hour overlay |
 | `hypr/scripts/commitheat.py` | The commits-by-hour overlay |
+| `bin/ccfleet` | Gathers ccusage spend from every machine, for the Touch Bar and the spend overlay |
+| `hypr/scripts/ccdetail.py` | The agent spend overlay |
 | `hypr/scripts/llmdetail.py` | The per-account usage detail overlay |
 | `hypr/scripts/dfrbar.py` | The Touch Bar drawn on screen, for machines without one |
 | `node/` | What `agentic-fleet install` puts on each node |

@@ -40,7 +40,7 @@ echo "== systemd user units =="
 for f in "$REPO"/systemd/user/*; do link "systemd/user/$(basename "$f")" "$HOME/.config/systemd/user/$(basename "$f")"; done
 systemctl --user daemon-reload
 units="claude-limits.timer claude-badges.service claude-actions.service
-       agentic-doctor.timer agentic-index.timer git-commits.timer"
+       agentic-doctor.timer agentic-index.timer git-commits.timer cc-usage.timer"
 systemctl --user enable --now $units
 echo "  enabled:$(echo " $units" | tr -s ' \n' ' ')"
 

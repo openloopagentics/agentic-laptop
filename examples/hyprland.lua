@@ -553,6 +553,8 @@ hl.bind("Control_R", hl.dsp.exec_cmd("$HOME/.config/hypr/scripts/dfrbar-launch c
 -- Also sent by the Touch Bar's commit counter, so tapping the figures opens
 -- the month behind them.
 hl.bind(mainMod .. " + SHIFT + G", hl.dsp.exec_cmd("$HOME/.config/hypr/scripts/commitheat.py"), { description = "Commits by hour" })
+-- Also sent by the Touch Bar's spend figures.
+hl.bind(mainMod .. " + SHIFT + Z", hl.dsp.exec_cmd("$HOME/.config/hypr/scripts/ccdetail.py"), { description = "Agent spend" })
 -- Also sent by the Touch Bar's usage buttons, one combo per account, so
 -- tapping a set of bars opens everything known about that account. Keep
 -- these in step with the Account keys in tiny-dfr.config.toml.
