@@ -116,6 +116,9 @@ if [ -n "$FROM" ]; then
     # Relative to the remote home, which scp resolves without needing ~.
     remote_dir=${DIR#"$HOME"/}
     run mkdir -p "$DIR/local" "$HOME/.config/claude-badged" "$HOME/.config/agentic-laptop"
+    # One shared connection, so a password is asked for once, not per file.
+    mux="-o ControlMaster=auto -o ControlPath=/tmp/agentic-setup-%C -o ControlPersist=60"
+    scp() { command scp $mux "$@"; }
     run scp -rq "$FROM:$remote_dir/local/." "$DIR/local/"
     for f in fleet push.conf; do
         run scp -q "$FROM:.config/claude-badged/$f" "$HOME/.config/claude-badged/$f" || note "no $f on $FROM"
