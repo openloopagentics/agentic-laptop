@@ -440,8 +440,13 @@ def main():
     idx = 0
     if want:
         idx = next(
-            (i for i, a in enumerate(accounts) if a.get("email") == want), 0
+            (i for i, a in enumerate(accounts) if a.get("email") == want), None
         )
+        # An account with no data (signed out, token dead) must not silently
+        # open on some other account: show it, empty, under its own name.
+        if idx is None:
+            accounts.append({"email": want, "host": "no node", "tier": "no data"})
+            idx = len(accounts) - 1
 
     if png:
         import cairo
