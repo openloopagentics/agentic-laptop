@@ -31,6 +31,15 @@ fi
 session=$(tmux display-message -p "#S" 2>/dev/null) || exit 0
 [ -n "$session" ] || exit 0
 
+# busy fires on every tool call; only log it when the state changes or once a
+# minute, which is enough to keep the controller's spinner from expiring.
+last="$HOME/.cache/agentic-badge/$session"
+if [ "$state" = busy ] && [ -n "$(find "$last" -mmin -1 2>/dev/null)" ] \
+    && [ "$(cat "$last" 2>/dev/null)" = busy ]; then
+    exit 0
+fi
+mkdir -p "${last%/*}" && printf '%s\n' "$state" > "$last"
+
 printf '%s %s\n' "$session" "$state" >> "$HOME/.claude-badges.log"
 
 # Only a pending question is worth a phone notification; "busy" and "done"

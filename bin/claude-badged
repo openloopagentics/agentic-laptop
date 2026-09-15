@@ -124,7 +124,8 @@ def expire_busy():
     """Drop busy badges whose work has plainly stopped."""
     now = time.time()
     stale = [k for k, v in badges.items()
-             if v.get("state") == "busy" and now - v.get("since", now) > BUSY_EXPIRY_SEC]
+             if v.get("state") == "busy"
+             and now - v.get("seen", v.get("since", now)) > BUSY_EXPIRY_SEC]
     for k in stale:
         del badges[k]
     return bool(stale)
@@ -158,6 +159,7 @@ def set_badge(ws, state, session=None, host="local"):
         entry = badges.get(ws) or {"state": state, "count": 0, "since": time.time()}
         entry.setdefault("since", time.time())   # when this streak began
         entry["state"] = state
+        entry["seen"] = time.time()               # last sign of life, for expiry
         # "busy" says work is under way; it is not something to count or be
         # summoned by, so it neither increments nor resets the tally.
         if state != "busy":

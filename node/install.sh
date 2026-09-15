@@ -61,32 +61,42 @@ mkdir -p "$HOME/.claude/hooks"
 python3 - "$AG/bin/agentic-badge" <<'PY'
 import json, pathlib, shutil, sys, time
 badge = sys.argv[1]
-p = pathlib.Path.home() / ".claude/settings.json"
-d = json.loads(p.read_text()) if p.exists() else {}
-if p.exists():
+home = pathlib.Path.home()
+# A second account under CLAUDE_CONFIG_DIR reads its own settings.json, so
+# hooks written only to ~/.claude/ never fire for it.
+targets = [home / ".claude/settings.json"] + sorted(
+    q / "settings.json" for q in home.glob(".claude-*")
+    if q.is_dir() and (q / ".claude.json").exists())
+for p in targets:
+  d = json.loads(p.read_text()) if p.exists() else {}
+  if p.exists():
     shutil.copy2(p, f"{p}.bak-agentic-{int(time.time())}")
-hooks = d.setdefault("hooks", {})
-# SubagentStop is deliberately absent: it fires per subagent, and writing
-# `done` there would clear the parent's badge while the parent is still going.
-# Stop passes through `stop` so the hook can read its own payload.
-for event, state in (("Notification", "ask"), ("Stop", "stop"),
-                     ("UserPromptSubmit", "busy"), ("SubagentStart", "busy")):
-    cmd = f"{badge} {state}"
-    groups = hooks.setdefault(event, [])
-    # Drop any earlier agentic-badge command for this event before appending.
-    # Matching on the exact string alone leaves a stale entry behind whenever
-    # the argument changes, and the old one still fires.
-    for g in groups:
-        g["hooks"] = [h for h in g.get("hooks", [])
-                      if badge not in (h.get("command") or "") or h.get("command") == cmd]
-    already = any(h.get("command") == cmd for g in groups for h in g.get("hooks", []))
-    if already:
-        continue
-    if groups:
-        groups[-1].setdefault("hooks", []).append({"type": "command", "command": cmd})
-    else:
-        groups.append({"hooks": [{"type": "command", "command": cmd}]})
-p.write_text(json.dumps(d, indent=2) + "\n")
+  hooks = d.setdefault("hooks", {})
+  # SubagentStop is deliberately absent: it fires per subagent, and writing
+  # `done` there would clear the parent's badge while the parent is still going.
+  # Stop passes through `stop` so the hook can read its own payload.
+  # PostToolUse marks work resumed after you answer a prompt: answering fires no
+  # UserPromptSubmit, so without it the badge stays on `ask` while the agent
+  # works. agentic-badge throttles it, so a tool storm is one log line.
+  for event, state in (("Notification", "ask"), ("Stop", "stop"),
+                       ("UserPromptSubmit", "busy"), ("SubagentStart", "busy"),
+                       ("PostToolUse", "busy")):
+      cmd = f"{badge} {state}"
+      groups = hooks.setdefault(event, [])
+      # Drop any earlier agentic-badge command for this event before appending.
+      # Matching on the exact string alone leaves a stale entry behind whenever
+      # the argument changes, and the old one still fires.
+      for g in groups:
+          g["hooks"] = [h for h in g.get("hooks", [])
+                        if badge not in (h.get("command") or "") or h.get("command") == cmd]
+      already = any(h.get("command") == cmd for g in groups for h in g.get("hooks", []))
+      if already:
+          continue
+      if groups:
+          groups[-1].setdefault("hooks", []).append({"type": "command", "command": cmd})
+      else:
+          groups.append({"hooks": [{"type": "command", "command": cmd}]})
+  p.write_text(json.dumps(d, indent=2) + "\n")
 print("  claude hooks: ok")
 PY
 
